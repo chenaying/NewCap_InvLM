@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Large data & checkpoints (download from ViECap/MeaCap releases)
+annotations/
+checkpoints/
+data/
+*.pt
+*.pth
+*.pickle
+*.pkl
+
+# Logs & outputs
+*.log
+wandb/
