@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../MeaCap-main"
+		},
+		{
+			"path": "../IFCap-master"
+		}
+	],
+	"settings": {}
+}
