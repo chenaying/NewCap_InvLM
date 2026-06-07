@@ -14,6 +14,10 @@ echo "=========================================================="
 echo "RUNNING EXPERIMENTS: $EXP_NAME, saving in checkpoints/$EXP_NAME"
 echo "=========================================================="
 
+# Step 0 (once): python ilr/build_ilr_neighbors.py \
+#   --path_of_datasets ./annotations/flickr30k/flickr30k_texts_features_ViT-B32.pickle \
+#   --output_path ./annotations/flickr30k/flickr30k_ilr_neighbors_k5_seed30_var0.04.json
+
 python main.py \
 --bs 80 \
 --lr 0.00002 \
@@ -26,6 +30,11 @@ python main.py \
 --language_model gpt2 \
 --using_hard_prompt \
 --soft_prompt_first \
+--use_ilr \
+--ilr_k 5 \
+--ilr_neighbors_path ./annotations/flickr30k/flickr30k_ilr_neighbors_k5_seed30_var0.04.json \
+--fusion_w1 0.85 \
+--fusion_w2 0.15 \
 --path_of_datasets ./annotations/flickr30k/flickr30k_texts_features_ViT-B32.pickle \
 --out_dir checkpoints/$EXP_NAME \
 --use_amp \

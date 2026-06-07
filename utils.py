@@ -1,8 +1,31 @@
 import math
 import torch
 import random
+import torch.nn.functional as nnf
 from typing import List, Tuple, Union
         
+def fuse_clip_features(
+    e_primary: torch.Tensor,
+    e_retrieved: torch.Tensor,
+    w1: float = 0.85,
+    w2: float = 0.15,
+) -> torch.Tensor:
+    """
+    Fuse primary CLIP feature with retrieved neighbor features.
+
+    Args:
+        e_primary: (B, clip_dim) main feature (noisy text feat in training / image feat at inference)
+        e_retrieved: (B, K, clip_dim) or (B, clip_dim) aggregated neighbors
+    Return:
+        (B, clip_dim) L2-normalized fused feature
+    """
+    if e_retrieved.dim() == 2:
+        e_agg = e_retrieved
+    else:
+        e_agg = e_retrieved.mean(dim=1)
+    e_fused = w1 * e_primary + w2 * e_agg
+    return nnf.normalize(e_fused, dim=-1)
+
 def noise_injection(x, variance = 0.001, device = 'cuda:0') -> torch.Tensor:
     """
     Args:

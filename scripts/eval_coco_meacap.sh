@@ -29,11 +29,16 @@ mkdir -p "${LOG_FOLDER}"
 COCO_LOG_FILE="${LOG_FOLDER}/COCO_MEACAP_${TIME_START}.log"
 
 # Override via environment variables on your server
-LANGUAGE_MODEL="${LANGUAGE_MODEL:-/home/teacher5/data1/cyp/project/NewCap/gpt2}"
-VL_MODEL="${VL_MODEL:-/home/teacher5/data1/cyp/project/NewCap/checkpoints/clip-vit-base-patch32}"
-PARSER_CKPT="${PARSER_CKPT:-/home/teacher5/data1/cyp/project/NewCap/checkpoints/flan-t5-base-VG-factual-sg}"
-WTE_MODEL="${WTE_MODEL:-/home/teacher5/data1/cyp/project/NewCap/checkpoints/all-MiniLM-L6-v2}"
+LANGUAGE_MODEL="${LANGUAGE_MODEL:-./checkpoints/gpt2}"
+VL_MODEL="${VL_MODEL:-./checkpoints/clip-vit-base-patch32}"
+PARSER_CKPT="${PARSER_CKPT:-./checkpoints/flan-t5-base-VG-factual-sg}"
+WTE_MODEL="${WTE_MODEL:-./checkpoints/all-MiniLM-L6-v2}"
 MEMORY_ID="${MEMORY_ID:-coco}"
+# Set USE_ILR=1 when evaluating checkpoints trained with --use_ilr
+ILR_ARGS=""
+if [[ "${USE_ILR:-0}" == "1" ]]; then
+  ILR_ARGS="--use_ilr --fusion_w1 0.85 --fusion_w2 0.15"
+fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
@@ -68,6 +73,7 @@ python validation.py \
   --parser_checkpoint "${PARSER_CKPT}" \
   --wte_model_path "${WTE_MODEL}" \
   --local_files_only \
+  ${ILR_ARGS} \
   ${EXTRA_ARGS} \
   2>&1 | tee -a "${COCO_LOG_FILE}"
 

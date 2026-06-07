@@ -16,6 +16,7 @@ from retrieval_categories import clip_texts_embeddings, image_text_simiarlity, t
 from meacap_utils.invlm_prompt import (
     MeaCapInvLMResources,
     hard_prompt_embeddings,
+    compute_continuous_embeddings,
     resolve_image_path,
     check_nocaps_images_available,
 )
@@ -98,8 +99,8 @@ def validation_nocaps(
             image_features = encoder.encode_image(image).float()
 
         image_features /= image_features.norm(2, dim=-1, keepdim=True)
-        continuous_embeddings = model.mapping_network(image_features).view(
-            -1, args.continuous_prompt_length, model.gpt_hidden_size
+        continuous_embeddings = compute_continuous_embeddings(
+            args, model, image_features, invlm_resources, image_path
         )
 
         if args.using_hard_prompt:
@@ -179,8 +180,8 @@ def validation_coco_flickr30k(
             image_features = encoder.encode_image(image).float()
 
         image_features /= image_features.norm(2, dim=-1, keepdim=True)
-        continuous_embeddings = model.mapping_network(image_features).view(
-            -1, args.continuous_prompt_length, model.gpt_hidden_size
+        continuous_embeddings = compute_continuous_embeddings(
+            args, model, image_features, invlm_resources, image_path
         )
 
         if args.using_hard_prompt:
@@ -248,8 +249,14 @@ def main(args) -> None:
     entities_text = None
     texts_embeddings = None
 
+    if args.use_ilr and not args.use_meacap_invlm:
+        raise ValueError('ILR fusion at inference requires --use_meacap_invlm (memory bank cosine retrieval).')
+
     if args.use_meacap_invlm:
-        print('Validation mode: MeaCap InvLM (memory retrieve-then-filter)')
+        mode = 'MeaCap InvLM (memory retrieve-then-filter)'
+        if args.use_ilr:
+            mode += ' + ILR feature fusion'
+        print(f'Validation mode: {mode}')
         invlm_resources = MeaCapInvLMResources(args, device)
     else:
         print('Validation mode: ViECap (CLIP entity classifier)')
@@ -328,6 +335,11 @@ if __name__ == '__main__':
     parser.add_argument('--parser_checkpoint', type=str, default='lizhuang144/flan-t5-base-VG-factual-sg')
     parser.add_argument('--wte_model_path', type=str, default='sentence-transformers/all-MiniLM-L6-v2')
     parser.add_argument('--local_files_only', action='store_true', default=False)
+
+    # ILR feature fusion (requires --use_meacap_invlm at inference)
+    parser.add_argument('--use_ilr', action='store_true', default=False)
+    parser.add_argument('--fusion_w1', type=float, default=0.85)
+    parser.add_argument('--fusion_w2', type=float, default=0.15)
 
     args = parser.parse_args()
     print('args: {}\n'.format(vars(args)))

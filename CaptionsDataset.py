@@ -1,4 +1,5 @@
 import clip
+import json
 import torch
 import pickle
 import random
@@ -80,6 +81,25 @@ class CaptionsDataset(Dataset):
 
         self.people_vocabs = ['people', 'person', 'man', 'men', 'woman', 'women', 'adult','boy', 'girl', 'kid', 'children', 'child', 'baby', 'guy', 'player', 'male', 'female', 'worker']
         self.objects_vocabs = load_entities_text(args.name_of_objects_vocabs, args.path_of_objects_vocabs, all_entities = False)
+
+        self.ilr_neighbors = None
+        self.all_clip_features = None
+        if getattr(args, 'use_ilr', False):
+            if not args.using_clip_features:
+                raise ValueError('ILR training requires --using_clip_features with pre-extracted CLIP features.')
+            if not getattr(args, 'ilr_neighbors_path', None):
+                raise ValueError('ILR training requires --ilr_neighbors_path (run ilr/build_ilr_neighbors.py first).')
+            with open(args.ilr_neighbors_path, 'r', encoding='utf-8') as f:
+                ilr_data = json.load(f)
+            self.ilr_neighbors = ilr_data['neighbors']
+            if len(self.ilr_neighbors) != len(self.captions):
+                raise ValueError(
+                    f'ILR neighbors count ({len(self.ilr_neighbors)}) != dataset size ({len(self.captions)}). '
+                    'Rebuild neighbors from the same pickle used in --path_of_datasets.'
+                )
+            self.all_clip_features = torch.stack(self.captions_clip_features)
+            print('ILR neighbors loaded from {} (k={})'.format(args.ilr_neighbors_path, ilr_data.get('k', args.ilr_k)))
+
         print('Dataset Loading: {} successful. Max sentence length: {}'.format(path_of_datasets, self.max_length_per_caption))
         
     def __len__(self) -> int:
@@ -126,20 +146,35 @@ class CaptionsDataset(Dataset):
         discrete_tokens = None
         if self.args.using_hard_prompt:
             discrete_tokens = parse_entities(self.args, self.tokenizer, [detected_entities], self.stopwords, self.people_vocabs, self.objects_vocabs)[0]
-        return  self.args, captions_clip, captions_gpt_tokens, masks, discrete_tokens
+
+        rt_feat = None
+        if self.ilr_neighbors is not None:
+            neighbor_ids = self.ilr_neighbors[item][:self.args.ilr_k]
+            rt_feat = self.all_clip_features[neighbor_ids]
+
+        return self.args, captions_clip, captions_gpt_tokens, masks, discrete_tokens, rt_feat
 
 
 def collate(batch):
-    batch_size = len(batch)
     args = batch[0][0]
-    _, captions_clip, captions_gpt_tokens, masks, discrete_tokens = zip(*batch)
+    use_ilr = getattr(args, 'use_ilr', False)
+
+    _, captions_clip, captions_gpt_tokens, masks, discrete_tokens, rt_feat = zip(*batch)
+    if use_ilr:
+        rt_feat = torch.stack(rt_feat)
+    else:
+        rt_feat = None
+
     captions_clip = torch.stack(captions_clip)
     captions_gpt_tokens = torch.stack(captions_gpt_tokens, dim=0)
-    masks =  torch.stack(masks)
+    masks = torch.stack(masks)
 
     hard_prompts_length = None
     if args.using_hard_prompt:
         captions_gpt_tokens, captions_tokens_for_loss, masks, hard_prompts_length = padding_captions(args, captions_gpt_tokens, masks, discrete_tokens)
     else:
         captions_gpt_tokens, captions_tokens_for_loss, masks = padding_captions(args, captions_gpt_tokens, masks)
+
+    if use_ilr:
+        return captions_clip, captions_gpt_tokens, captions_tokens_for_loss, masks, hard_prompts_length, rt_feat
     return captions_clip, captions_gpt_tokens, captions_tokens_for_loss, masks, hard_prompts_length

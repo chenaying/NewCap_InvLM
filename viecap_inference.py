@@ -1,23 +1,15 @@
 # MeaCap InvLM single-image inference (flat ViECap layout, NOT `from viecap.xxx`).
 # If you see ModuleNotFoundError: No module named 'viecap', replace this file from the repo.
 
-import copy
-import os
-import json
-
 import clip
 import torch
 import argparse
 from PIL import Image
 from ClipCap import ClipCaptionModel
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 from utils import compose_discrete_prompts
 from search import greedy_search, beam_search, opt_search
-from meacap_utils.detect_utils import retrieve_concepts
-from models.clip_utils import CLIP
-
-cpu_device = torch.device("cpu")
+from meacap_utils.invlm_prompt import MeaCapInvLMResources, compute_continuous_embeddings
 
 
 def _hf_load_kwargs(local_files_only: bool) -> dict:
@@ -41,69 +33,21 @@ def main(args) -> None:
     model.to(device)
     encoder, preprocess = clip.load(args.clip_model, device=device)
 
-    vl_model = CLIP(args.vl_model, local_files_only=args.local_files_only)
-    vl_model = vl_model.to(device)
-    print('Load memory-retrieval CLIP from {}.'.format(args.vl_model))
-
-    wte_model = SentenceTransformer(args.wte_model_path)
-    print('Load sentenceBERT from {}.'.format(args.wte_model_path))
-
-    parser_tokenizer = AutoTokenizer.from_pretrained(args.parser_checkpoint, **hf_kw)
-    parser_model = AutoModelForSeq2SeqLM.from_pretrained(args.parser_checkpoint, **hf_kw)
-    parser_model.eval()
-    parser_model.to(device)
-    print('Load Textual Scene Graph parser from the checkpoint {}.'.format(args.parser_checkpoint))
-
-    memory_id = args.memory_id
-    memory_caption_path = os.path.join(f"data/memory/{memory_id}", "memory_captions.json")
-    memory_clip_embedding_file = os.path.join(f"data/memory/{memory_id}", "memory_clip_embeddings.pt")
-    memory_wte_embedding_file = os.path.join(f"data/memory/{memory_id}", "memory_wte_embeddings.pt")
-    memory_clip_embeddings = torch.load(memory_clip_embedding_file, map_location=device)
-    memory_wte_embeddings = torch.load(memory_wte_embedding_file, map_location=device)
-    with open(memory_caption_path, 'r', encoding='utf-8') as f:
-        memory_captions = json.load(f)
-
-    if memory_id in ('cc3m', 'ss1m'):
-        retrieve_on_CPU = True
-        print('CC3M/SS1M memory is large; running retrieval on CPU...')
-        vl_model_retrieve = copy.deepcopy(vl_model).to(cpu_device)
-        memory_clip_embeddings = memory_clip_embeddings.to(cpu_device)
-    else:
-        vl_model_retrieve = vl_model
-        retrieve_on_CPU = False
+    invlm_resources = None
+    if args.use_ilr or args.using_hard_prompt:
+        invlm_resources = MeaCapInvLMResources(args, device)
 
     image = preprocess(Image.open(args.image_path)).unsqueeze(dim=0).to(device)
     image_features = encoder.encode_image(image).float()
     image_features /= image_features.norm(2, dim=-1, keepdim=True)
-    continuous_embeddings = model.mapping_network(image_features).view(
-        -1, args.continuous_prompt_length, model.gpt_hidden_size
+    continuous_embeddings = compute_continuous_embeddings(
+        args, model, image_features, invlm_resources, args.image_path
     )
 
     if args.using_hard_prompt:
-        batch_image_embeds = vl_model.compute_image_representation_from_image_path(args.image_path)
+        from meacap_utils.invlm_prompt import retrieve_memory_concepts
 
-        if not retrieve_on_CPU:
-            clip_score, _ = vl_model_retrieve.compute_image_text_similarity_via_embeddings(
-                batch_image_embeds, memory_clip_embeddings
-            )
-        else:
-            batch_image_embeds_cpu = batch_image_embeds.to(cpu_device)
-            clip_score_cpu, _ = vl_model_retrieve.compute_image_text_similarity_via_embeddings(
-                batch_image_embeds_cpu,
-                memory_clip_embeddings,
-            )
-            clip_score = clip_score_cpu.to(device)
-
-        select_memory_ids = clip_score.topk(args.memory_caption_num, dim=-1)[1].squeeze(0)
-        select_memory_captions = [memory_captions[i] for i in select_memory_ids]
-        detected_objects = retrieve_concepts(
-            parser_model=parser_model,
-            parser_tokenizer=parser_tokenizer,
-            wte_model=wte_model,
-            select_memory_captions=select_memory_captions,
-            image_embeds=batch_image_embeds,
-            device=device,
-        )
+        detected_objects = retrieve_memory_concepts(invlm_resources, args.image_path)
 
         print("memory concepts:", detected_objects)
         discrete_tokens = compose_discrete_prompts(tokenizer, detected_objects).unsqueeze(dim=0).to(device)
@@ -147,24 +91,24 @@ if __name__ == '__main__':
     parser.add_argument('--clip_model', default='ViT-B/32')
     parser.add_argument(
         '--language_model',
-        default='/home/teacher5/data1/cyp/project/NewCap/gpt2',
+        default='./checkpoints/gpt2',
         help='local GPT-2 dir or HuggingFace model id',
     )
     parser.add_argument(
         '--vl_model',
         type=str,
-        default='/home/teacher5/data1/cyp/project/NewCap/checkpoints/clip-vit-base-patch32',
+        default='./checkpoints/clip-vit-base-patch32',
         help='local HF CLIP dir or model id for memory retrieval',
     )
     parser.add_argument(
         '--parser_checkpoint',
         type=str,
-        default='/home/teacher5/data1/cyp/project/NewCap/checkpoints/flan-t5-base-VG-factual-sg',
+        default='./checkpoints/flan-t5-base-VG-factual-sg',
     )
     parser.add_argument(
         '--wte_model_path',
         type=str,
-        default='/home/teacher5/data1/cyp/project/NewCap/checkpoints/all-MiniLM-L6-v2',
+        default='./checkpoints/all-MiniLM-L6-v2',
     )
     parser.add_argument(
         '--local_files_only',
@@ -184,6 +128,9 @@ if __name__ == '__main__':
     parser.add_argument('--text_prompt', type=str, default=None)
     parser.add_argument('--memory_id', type=str, default='coco', help='memory bank name')
     parser.add_argument('--memory_caption_num', type=int, default=5)
+    parser.add_argument('--use_ilr', action='store_true', default=False, help='fuse image feat with memory cosine top-K before Projector')
+    parser.add_argument('--fusion_w1', type=float, default=0.85)
+    parser.add_argument('--fusion_w2', type=float, default=0.15)
     args = parser.parse_args()
     print('args: {}\n'.format(vars(args)))
     main(args)

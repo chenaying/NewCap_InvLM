@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 
 from models.clip_utils import CLIP
 from meacap_utils.detect_utils import retrieve_concepts
-from utils import compose_discrete_prompts
+from utils import compose_discrete_prompts, fuse_clip_features
 
 cpu_device = torch.device('cpu')
 
@@ -71,22 +71,67 @@ class MeaCapInvLMResources:
         print(f'[MeaCap InvLM] memory bank "{memory_id}" loaded ({len(self.memory_captions)} captions).')
 
 
-def retrieve_memory_concepts(resources: MeaCapInvLMResources, image_path: str) -> List[str]:
+def _memory_cosine_topk(resources: MeaCapInvLMResources, batch_image_embeds: torch.Tensor):
     device = resources.device
-    batch_image_embeds = resources.vl_model.compute_image_representation_from_image_path(image_path)
-
     if not resources.retrieve_on_cpu:
-        clip_score, _ = resources.vl_model_retrieve.compute_image_text_similarity_via_embeddings(
+        clip_score, raw_logits = resources.vl_model_retrieve.compute_image_text_similarity_via_embeddings(
             batch_image_embeds, resources.memory_clip_embeddings
         )
     else:
         batch_cpu = batch_image_embeds.to(cpu_device)
-        clip_score, _ = resources.vl_model_retrieve.compute_image_text_similarity_via_embeddings(
+        clip_score, raw_logits = resources.vl_model_retrieve.compute_image_text_similarity_via_embeddings(
             batch_cpu, resources.memory_clip_embeddings
         )
         clip_score = clip_score.to(device)
+        raw_logits = raw_logits.to(device)
 
-    select_ids = clip_score.topk(resources.memory_caption_num, dim=-1)[1].squeeze(0)
+    k = resources.memory_caption_num
+    select_ids = clip_score.topk(k, dim=-1)[1].squeeze(0)
+    rt_features = resources.memory_clip_embeddings[select_ids]
+    if resources.retrieve_on_cpu:
+        rt_features = rt_features.to(device)
+    return select_ids, rt_features, raw_logits
+
+
+def retrieve_memory_rt_features(resources: MeaCapInvLMResources, image_path: str) -> torch.Tensor:
+    """Cosine top-K memory caption CLIP embeddings, shape (K, clip_dim)."""
+    batch_image_embeds = resources.vl_model.compute_image_representation_from_image_path(image_path)
+    _, rt_features, _ = _memory_cosine_topk(resources, batch_image_embeds)
+    return rt_features.float()
+
+
+def compute_continuous_embeddings(
+    args,
+    model,
+    image_features: torch.Tensor,
+    invlm_resources: MeaCapInvLMResources = None,
+    image_path: str = None,
+) -> torch.Tensor:
+    """
+    MappingNetwork input with optional ILR fusion:
+    e_fused = w1 * e_img + w2 * mean(retrieved_memory_features)
+    """
+    primary = image_features
+    if getattr(args, 'use_ilr', False):
+        if invlm_resources is None or image_path is None:
+            raise ValueError('ILR fusion at inference requires MeaCap memory bank and image_path.')
+        rt_features = retrieve_memory_rt_features(invlm_resources, image_path)
+        primary = fuse_clip_features(
+            primary,
+            rt_features.unsqueeze(0),
+            getattr(args, 'fusion_w1', 0.85),
+            getattr(args, 'fusion_w2', 0.15),
+        )
+    return model.mapping_network(primary).view(
+        -1, args.continuous_prompt_length, model.gpt_hidden_size
+    )
+
+
+def retrieve_memory_concepts(resources: MeaCapInvLMResources, image_path: str) -> List[str]:
+    device = resources.device
+    batch_image_embeds = resources.vl_model.compute_image_representation_from_image_path(image_path)
+
+    select_ids, _, _ = _memory_cosine_topk(resources, batch_image_embeds)
     select_captions = [resources.memory_captions[i] for i in select_ids]
 
     return retrieve_concepts(

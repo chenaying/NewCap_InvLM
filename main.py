@@ -7,12 +7,13 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as nnf
-from utils import noise_injection
+from utils import noise_injection, fuse_clip_features
 from CaptionsDataset import collate
 from torch.utils.data import DataLoader
 from CaptionsDataset import CaptionsDataset
 from ClipCap import ClipCaptionModel, ClipCaptionPrefix
-from transformers import AdamW, get_linear_schedule_with_warmup
+from torch.optim import AdamW
+from transformers import get_linear_schedule_with_warmup
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -60,7 +61,13 @@ def train(
         progress = tqdm(total = len(dataloader), desc = output_prefix)
         train_loss_sum = 0
         # training
-        for idx, (captions_clip, captions_gpt_tokens, captions_tokens_for_loss, masks, hard_prompts_length) in enumerate(dataloader):
+        for idx, batch in enumerate(dataloader):
+            if args.use_ilr:
+                captions_clip, captions_gpt_tokens, captions_tokens_for_loss, masks, hard_prompts_length, rt_feat = batch
+            else:
+                captions_clip, captions_gpt_tokens, captions_tokens_for_loss, masks, hard_prompts_length = batch
+                rt_feat = None
+
             model.zero_grad()
             if not args.using_clip_features:
                 with torch.no_grad():
@@ -72,6 +79,13 @@ def train(
             if args.normalize_prefix:
                 continuous_prefix /= continuous_prefix.norm(2, dim = -1, keepdim = True)
             continuous_prefix = noise_injection(continuous_prefix, variance = args.noise_variance, device = args.device)
+
+            if args.use_ilr:
+                rt_feat = rt_feat.to(device).float()
+                continuous_prefix = fuse_clip_features(
+                    continuous_prefix, rt_feat, args.fusion_w1, args.fusion_w2
+                )
+
             captions_gpt_tokens, captions_tokens_for_loss, masks = captions_gpt_tokens.to(device), captions_tokens_for_loss.to(device), masks.to(device)
 
             with torch.cuda.amp.autocast(enabled = args.use_amp):                
@@ -141,6 +155,11 @@ def main():
     parser.add_argument('--use_amp', action = 'store_true', default = False, help = "whether to use torch.amp to acclerate training")
     parser.add_argument('--disable_random_seed', action = 'store_true', default = False, help = 'set random seed for reproducing')
     parser.add_argument('--random_seed', type = int, default = 30, help = 'set random seed for reproducing')
+    parser.add_argument('--use_ilr', action = 'store_true', default = False, help = 'enable ILR branch with offline cosine neighbors + feature fusion')
+    parser.add_argument('--ilr_k', type = int, default = 5, help = 'number of ILR neighbors per caption')
+    parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
+    parser.add_argument('--fusion_w1', type = float, default = 0.85, help = 'weight for primary feature in ILR fusion')
+    parser.add_argument('--fusion_w2', type = float, default = 0.15, help = 'weight for retrieved mean feature in ILR fusion')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')
