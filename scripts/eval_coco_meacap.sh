@@ -37,7 +37,7 @@ MEMORY_ID="${MEMORY_ID:-coco}"
 # Set USE_ILR=1 when evaluating checkpoints trained with --use_ilr
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
-  ILR_ARGS="--use_ilr --fusion_w1 0.85 --fusion_w2 0.15"
+  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2"
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"

@@ -36,7 +36,7 @@ MEMORY_ID="${MEMORY_ID:-flickr30k}"
 MEMORY_CAPTION_NUM="${MEMORY_CAPTION_NUM:-5}"
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
-  ILR_ARGS="--use_ilr --fusion_w1 0.85 --fusion_w2 0.15"
+  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2"
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"

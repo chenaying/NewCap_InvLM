@@ -119,8 +119,8 @@ def compute_continuous_embeddings(
         primary = fuse_clip_features(
             primary,
             rt_features.unsqueeze(0),
-            getattr(args, 'fusion_w1', 0.85),
-            getattr(args, 'fusion_w2', 0.15),
+            getattr(args, 'fusion_w1', 0.8),
+            getattr(args, 'fusion_w2', 0.2),
         )
     return model.mapping_network(primary).view(
         -1, args.continuous_prompt_length, model.gpt_hidden_size

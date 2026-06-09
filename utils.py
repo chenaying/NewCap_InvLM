@@ -7,8 +7,8 @@ from typing import List, Tuple, Union
 def fuse_clip_features(
     e_primary: torch.Tensor,
     e_retrieved: torch.Tensor,
-    w1: float = 0.85,
-    w2: float = 0.15,
+    w1: float = 0.8,
+    w2: float = 0.2,
 ) -> torch.Tensor:
     """
     Fuse primary CLIP feature with retrieved neighbor features.
