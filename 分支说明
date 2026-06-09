@@ -1,0 +1,12 @@
+在训练和推理阶段增加了IFCap的ILR模块,融合权重分别是0.8和0.2.
+将 fusion 权重从 0.85 / 0.15 统一改为 0.8 / 0.2，修改位置如下：
+类别	文件
+核心默认值
+utils.py、main.py、validation.py、viecap_inference.py、meacap_utils/invlm_prompt.py
+训练脚本
+scripts/train_coco.sh、scripts/train_flickr30k.sh
+推理/评估
+scripts/eval_coco_meacap.sh、eval_flickr30k_meacap.sh、eval_nocaps_meacap.sh、run_meacap_invlm.sh
+启用 ILR 时，脚本会自动使用新权重，例如：
+USE_ILR=1 bash scripts/eval_flickr30k_meacap.sh train_coco 0 14
+日志中应看到：'fusion_w1': 0.8, 'fusion_w2': 0.2
