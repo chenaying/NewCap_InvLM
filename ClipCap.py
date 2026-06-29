@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as nnf
 from typing import Tuple, Optional, List
 from transformers import GPT2LMHeadModel
+from utils import GatedFusion
 
 class MlpTransformer(nn.Module):
 
@@ -173,7 +174,8 @@ class ClipCaptionModel(nn.Module):
         num_heads: int = 8,
         gpt_type: str = 'gpt2',
         soft_prompt_first: bool = False,
-        only_hard_prompt: bool = False
+        only_hard_prompt: bool = False,
+        fusion_type: str = 'linear'
     ) -> None:
         """
         Args:
@@ -185,6 +187,7 @@ class ClipCaptionModel(nn.Module):
             gpt_type: the language model
             soft_prompt_first: False -> hard prompt + soft prompt; True -> soft prompt + hard prompt
             only_hard_prompt: using the hard prompts only
+            fusion_type: ILR feature fusion type ('linear' fixed-weight or 'gated' learnable)
         """
         super(ClipCaptionModel, self).__init__()
         self.soft_prompt_first = soft_prompt_first
@@ -193,6 +196,9 @@ class ClipCaptionModel(nn.Module):
         self.gpt, self.gpt_hidden_size  = get_language_mode(gpt_type)
         self.mapping_network = MappingNetwork(clip_project_length, clip_hidden_size, continuous_length, self.gpt_hidden_size, num_layers, num_heads)
         self.gpt_type = gpt_type
+        self.fusion_type = fusion_type
+        # learnable ILR fusion module (only used when fusion_type == 'gated')
+        self.fusion = GatedFusion(clip_hidden_size) if fusion_type == 'gated' else None
     
     def word_embed(self, caption_tokens):
         if 'gpt' in self.gpt_type:
@@ -243,7 +249,10 @@ class ClipCaptionModel(nn.Module):
 class ClipCaptionPrefix(ClipCaptionModel):
 
     def parameters(self, recurse: bool = True):
-        return self.mapping_network.parameters()
+        params = list(self.mapping_network.parameters())
+        if self.fusion is not None:
+            params += list(self.fusion.parameters())
+        return iter(params)
 
     def train(self, mode: bool = True):
         super(ClipCaptionPrefix, self).train(mode)

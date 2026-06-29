@@ -1,5 +1,6 @@
 import math
 import torch
+import torch.nn as nn
 import random
 import torch.nn.functional as nnf
 from typing import List, Tuple, Union
@@ -25,6 +26,42 @@ def fuse_clip_features(
         e_agg = e_retrieved.mean(dim=1)
     e_fused = w1 * e_primary + w2 * e_agg
     return nnf.normalize(e_fused, dim=-1)
+
+
+class GatedFusion(nn.Module):
+    """External gated fusion in CLIP space (before Projector).
+
+    Replaces the fixed-weight linear fusion with a learnable, sample-adaptive,
+    per-dimension gate:
+        e_agg   = mean(e_retrieved)
+        g       = sigmoid(MLP([e_primary; e_agg]))      # (B, clip_dim), per-dim
+        e_fused = (1 - g) * e_primary + g * e_agg
+    The gate bias is initialized so that the initial gate is ~init_gate (default
+    0.2), matching the previously validated linear weight for a stable start.
+    """
+
+    def __init__(self, dim: int = 512, init_gate: float = 0.2) -> None:
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+            nn.Sigmoid(),
+        )
+        # logit(init_gate) so that sigmoid(bias) == init_gate at init
+        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
+        bias_value = math.log(init_gate / (1 - init_gate))
+        nn.init.zeros_(self.gate[2].weight)
+        nn.init.constant_(self.gate[2].bias, bias_value)
+
+    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
+        if e_retrieved.dim() == 2:
+            e_agg = e_retrieved
+        else:
+            e_agg = e_retrieved.mean(dim=1)
+        g = self.gate(torch.cat([e_primary, e_agg], dim=-1))
+        e_fused = (1 - g) * e_primary + g * e_agg
+        return nnf.normalize(e_fused, dim=-1)
 
 def noise_injection(x, variance = 0.001, device = 'cuda:0') -> torch.Tensor:
     """

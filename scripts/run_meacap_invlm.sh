@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 IMAGE_PATH="${1:-images/instance1.jpg}"
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
-  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2"
+  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated}"
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"

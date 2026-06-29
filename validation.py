@@ -268,6 +268,7 @@ def main(args) -> None:
         args.clip_project_length,
         clip_hidden_size,
         gpt_type=args.language_model,
+        fusion_type=getattr(args, 'fusion_type', 'linear'),
     )
     ckpt = torch.load(args.weight_path, map_location=device)
     missing, unexpected = model.load_state_dict(ckpt, strict=False)
@@ -340,6 +341,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_ilr', action='store_true', default=False)
     parser.add_argument('--fusion_w1', type=float, default=0.8)
     parser.add_argument('--fusion_w2', type=float, default=0.2)
+    parser.add_argument('--fusion_type', default='linear', choices=['linear', 'gated'])
 
     args = parser.parse_args()
     print('args: {}\n'.format(vars(args)))

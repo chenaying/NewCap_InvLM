@@ -82,9 +82,12 @@ def train(
 
             if args.use_ilr:
                 rt_feat = rt_feat.to(device).float()
-                continuous_prefix = fuse_clip_features(
-                    continuous_prefix, rt_feat, args.fusion_w1, args.fusion_w2
-                )
+                if getattr(args, 'fusion_type', 'linear') == 'gated':
+                    continuous_prefix = model.fusion(continuous_prefix, rt_feat)
+                else:
+                    continuous_prefix = fuse_clip_features(
+                        continuous_prefix, rt_feat, args.fusion_w1, args.fusion_w2
+                    )
 
             captions_gpt_tokens, captions_tokens_for_loss, masks = captions_gpt_tokens.to(device), captions_tokens_for_loss.to(device), masks.to(device)
 
@@ -158,8 +161,9 @@ def main():
     parser.add_argument('--use_ilr', action = 'store_true', default = False, help = 'enable ILR branch with offline cosine neighbors + feature fusion')
     parser.add_argument('--ilr_k', type = int, default = 5, help = 'number of ILR neighbors per caption')
     parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
-    parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion')
-    parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion')
+    parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion (linear)')
+    parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion (linear)')
+    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated'], help = 'ILR fusion type: linear fixed-weight or gated learnable')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')
@@ -177,9 +181,9 @@ def main():
         args = args
     )
     if args.frozen_gpt:
-        model = ClipCaptionPrefix(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt)
+        model = ClipCaptionPrefix(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type)
     else:
-        model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt)
+        model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type)
     
     train(args, datasets, model, output_dir = args.out_dir, output_prefix = args.prefix)
 

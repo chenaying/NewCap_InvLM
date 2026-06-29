@@ -116,12 +116,15 @@ def compute_continuous_embeddings(
         if invlm_resources is None or image_path is None:
             raise ValueError('ILR fusion at inference requires MeaCap memory bank and image_path.')
         rt_features = retrieve_memory_rt_features(invlm_resources, image_path)
-        primary = fuse_clip_features(
-            primary,
-            rt_features.unsqueeze(0),
-            getattr(args, 'fusion_w1', 0.8),
-            getattr(args, 'fusion_w2', 0.2),
-        )
+        if getattr(args, 'fusion_type', 'linear') == 'gated' and getattr(model, 'fusion', None) is not None:
+            primary = model.fusion(primary, rt_features.unsqueeze(0))
+        else:
+            primary = fuse_clip_features(
+                primary,
+                rt_features.unsqueeze(0),
+                getattr(args, 'fusion_w1', 0.8),
+                getattr(args, 'fusion_w2', 0.2),
+            )
     return model.mapping_network(primary).view(
         -1, args.continuous_prompt_length, model.gpt_hidden_size
     )

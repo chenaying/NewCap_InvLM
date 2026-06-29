@@ -35,6 +35,7 @@ python main.py \
 --ilr_neighbors_path ./annotations/coco/coco_ilr_neighbors_k5_seed30_var0.04.json \
 --fusion_w1 0.8 \
 --fusion_w2 0.2 \
+--fusion_type ${FUSION_TYPE:-gated} \
 --path_of_datasets ./annotations/coco/coco_texts_features_ViT-B32.pickle \
 --out_dir checkpoints/$EXP_NAME \
 --use_amp \
