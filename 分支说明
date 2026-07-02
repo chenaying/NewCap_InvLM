@@ -1,0 +1,60 @@
+只在前分支（update_gated_fusion）的基础上修改了 run_meacap_invlm.sh文件，让它支持通过 MEMORY_ID、WEIGHT_PATH 等环境变量切换 Flickr 域内/跨域配置。
+
+改动说明
+新增可配置环境变量（与 eval_*_meacap.sh 风格一致）：
+
+变量	默认值	含义
+MEMORY_ID
+coco
+记忆库
+MEMORY_CAPTION_NUM
+5
+检索 caption 数量
+EXP_NAME
+train_coco
+权重目录名
+EPOCH
+14
+checkpoint epoch
+WEIGHT_PATH
+由 EXP_NAME+EPOCH 拼出
+直接指定权重路径（优先级更高）
+DEVICE
+0
+GPU 编号
+USE_ILR
+0
+是否开启 ILR
+FUSION_TYPE
+gated
+linear / gated
+FUSION_W1 / FUSION_W2
+0.8 / 0.2
+linear 融合权重
+可直接复制的命令
+COCO 域内
+# 无 ILR
+bash scripts/run_meacap_invlm.sh images/instance1.jpg
+# linear
+USE_ILR=1 FUSION_TYPE=linear bash scripts/run_meacap_invlm.sh images/instance1.jpg
+# gated
+USE_ILR=1 FUSION_TYPE=gated bash scripts/run_meacap_invlm.sh images/instance1.jpg
+Flickr30k 域内
+USE_ILR=1 FUSION_TYPE=linear MEMORY_ID=flickr30k \
+  EXP_NAME=train_flickr30k EPOCH=29 \
+  bash scripts/run_meacap_invlm.sh ./annotations/flickr30k/flickr30k-images/1007129816.jpg
+USE_ILR=1 FUSION_TYPE=gated MEMORY_ID=flickr30k \
+  WEIGHT_PATH=checkpoints/train_flickr30k_gated/coco_prefix-0029.pt \
+  bash scripts/run_meacap_invlm.sh ./annotations/flickr30k/flickr30k-images/1007129816.jpg
+COCO → Flickr30k 跨域
+USE_ILR=1 FUSION_TYPE=linear MEMORY_ID=flickr30k \
+  EXP_NAME=train_coco EPOCH=14 \
+  bash scripts/run_meacap_invlm.sh ./annotations/flickr30k/flickr30k-images/1007129816.jpg
+Flickr30k → COCO 跨域
+USE_ILR=1 FUSION_TYPE=linear MEMORY_ID=coco \
+  EXP_NAME=train_flickr30k EPOCH=29 \
+  bash scripts/run_meacap_invlm.sh ./annotations/coco/val2014/COCO_val2014_000000000042.jpg
+使用要点
+不设 WEIGHT_PATH：用 EXP_NAME + EPOCH 自动拼路径，例如 checkpoints/train_flickr30k/coco_prefix-0029.pt
+设 WEIGHT_PATH：直接指定完整路径（适合 train_*_gated 等备份目录）
+默认行为不变：不传任何环境变量时，仍是 COCO 域内 + train_coco/0014 + 无 ILR
