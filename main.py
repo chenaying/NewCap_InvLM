@@ -82,7 +82,7 @@ def train(
 
             if args.use_ilr:
                 rt_feat = rt_feat.to(device).float()
-                if getattr(args, 'fusion_type', 'linear') == 'gated':
+                if getattr(model, 'fusion', None) is not None:
                     continuous_prefix = model.fusion(continuous_prefix, rt_feat)
                 else:
                     continuous_prefix = fuse_clip_features(
@@ -163,7 +163,7 @@ def main():
     parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
     parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion (linear)')
     parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion (linear)')
-    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated'], help = 'ILR fusion type: linear fixed-weight or gated learnable')
+    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'gated_crossattn'], help = 'ILR fusion: linear, gated, or gated_crossattn')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')

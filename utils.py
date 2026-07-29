@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import random
 import torch.nn.functional as nnf
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
         
 def fuse_clip_features(
     e_primary: torch.Tensor,
@@ -62,6 +62,50 @@ class GatedFusion(nn.Module):
         g = self.gate(torch.cat([e_primary, e_agg], dim=-1))
         e_fused = (1 - g) * e_primary + g * e_agg
         return nnf.normalize(e_fused, dim=-1)
+
+
+class GatedCrossAttnFusion(nn.Module):
+    """External gated cross-attention fusion in CLIP space (before Projector).
+
+    Cross-attention replaces mean pooling over K retrieved neighbors; the gate
+    then blends primary and attended retrieval features per dimension:
+        e_attn  = CrossAttn(Q=e_primary, K/V=e_retrieved)
+        g       = sigmoid(MLP([e_primary; e_attn]))
+        e_fused = (1 - g) * e_primary + g * e_attn
+    """
+
+    def __init__(self, dim: int = 512, num_heads: int = 8, init_gate: float = 0.2) -> None:
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+            nn.Sigmoid(),
+        )
+        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
+        bias_value = math.log(init_gate / (1 - init_gate))
+        nn.init.zeros_(self.gate[2].weight)
+        nn.init.constant_(self.gate[2].bias, bias_value)
+
+    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
+        if e_retrieved.dim() == 2:
+            e_retrieved = e_retrieved.unsqueeze(1)
+        q = e_primary.unsqueeze(1)
+        e_attn, _ = self.cross_attn(q, e_retrieved, e_retrieved)
+        e_attn = e_attn.squeeze(1)
+        g = self.gate(torch.cat([e_primary, e_attn], dim=-1))
+        e_fused = (1 - g) * e_primary + g * e_attn
+        return nnf.normalize(e_fused, dim=-1)
+
+
+def build_fusion_module(fusion_type: str, dim: int = 512) -> Optional[nn.Module]:
+    if fusion_type == 'gated':
+        return GatedFusion(dim)
+    if fusion_type == 'gated_crossattn':
+        return GatedCrossAttnFusion(dim)
+    return None
+
 
 def noise_injection(x, variance = 0.001, device = 'cuda:0') -> torch.Tensor:
     """

@@ -341,7 +341,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_ilr', action='store_true', default=False)
     parser.add_argument('--fusion_w1', type=float, default=0.8)
     parser.add_argument('--fusion_w2', type=float, default=0.2)
-    parser.add_argument('--fusion_type', default='linear', choices=['linear', 'gated'])
+    parser.add_argument('--fusion_type', default='linear', choices=['linear', 'gated', 'gated_crossattn'])
 
     args = parser.parse_args()
     print('args: {}\n'.format(vars(args)))

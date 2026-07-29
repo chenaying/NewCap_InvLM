@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as nnf
 from typing import Tuple, Optional, List
 from transformers import GPT2LMHeadModel
-from utils import GatedFusion
+from utils import build_fusion_module
 
 class MlpTransformer(nn.Module):
 
@@ -187,7 +187,7 @@ class ClipCaptionModel(nn.Module):
             gpt_type: the language model
             soft_prompt_first: False -> hard prompt + soft prompt; True -> soft prompt + hard prompt
             only_hard_prompt: using the hard prompts only
-            fusion_type: ILR feature fusion type ('linear' fixed-weight or 'gated' learnable)
+            fusion_type: ILR feature fusion ('linear', 'gated', or 'gated_crossattn')
         """
         super(ClipCaptionModel, self).__init__()
         self.soft_prompt_first = soft_prompt_first
@@ -197,8 +197,7 @@ class ClipCaptionModel(nn.Module):
         self.mapping_network = MappingNetwork(clip_project_length, clip_hidden_size, continuous_length, self.gpt_hidden_size, num_layers, num_heads)
         self.gpt_type = gpt_type
         self.fusion_type = fusion_type
-        # learnable ILR fusion module (only used when fusion_type == 'gated')
-        self.fusion = GatedFusion(clip_hidden_size) if fusion_type == 'gated' else None
+        self.fusion = build_fusion_module(fusion_type, clip_hidden_size)
     
     def word_embed(self, caption_tokens):
         if 'gpt' in self.gpt_type:
