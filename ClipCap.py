@@ -187,7 +187,7 @@ class ClipCaptionModel(nn.Module):
             gpt_type: the language model
             soft_prompt_first: False -> hard prompt + soft prompt; True -> soft prompt + hard prompt
             only_hard_prompt: using the hard prompts only
-            fusion_type: ILR feature fusion ('linear', 'gated', or 'gated_crossattn')
+            fusion_type: ILR feature fusion ('linear', 'gated', 'crossattn', or 'gated_crossattn')
         """
         super(ClipCaptionModel, self).__init__()
         self.soft_prompt_first = soft_prompt_first

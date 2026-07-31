@@ -99,9 +99,30 @@ class GatedCrossAttnFusion(nn.Module):
         return nnf.normalize(e_fused, dim=-1)
 
 
+class CrossAttnFusion(nn.Module):
+    """External cross-attention fusion in CLIP space (before Projector).
+
+    No gating: the fused feature is the attention-weighted retrieval vector only:
+        e_fused = normalize(CrossAttn(Q=e_primary, K/V=e_retrieved))
+    """
+
+    def __init__(self, dim: int = 512, num_heads: int = 8) -> None:
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+
+    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
+        if e_retrieved.dim() == 2:
+            e_retrieved = e_retrieved.unsqueeze(1)
+        q = e_primary.unsqueeze(1)
+        e_attn, _ = self.cross_attn(q, e_retrieved, e_retrieved)
+        return nnf.normalize(e_attn.squeeze(1), dim=-1)
+
+
 def build_fusion_module(fusion_type: str, dim: int = 512) -> Optional[nn.Module]:
     if fusion_type == 'gated':
         return GatedFusion(dim)
+    if fusion_type == 'crossattn':
+        return CrossAttnFusion(dim)
     if fusion_type == 'gated_crossattn':
         return GatedCrossAttnFusion(dim)
     return None

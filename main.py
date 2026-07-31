@@ -163,7 +163,7 @@ def main():
     parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
     parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion (linear)')
     parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion (linear)')
-    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'gated_crossattn'], help = 'ILR fusion: linear, gated, or gated_crossattn')
+    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'crossattn', 'gated_crossattn'], help = 'ILR fusion: linear, gated, crossattn, or gated_crossattn')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')
