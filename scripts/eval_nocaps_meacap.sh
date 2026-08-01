@@ -51,11 +51,9 @@ if [[ ! -f "${FEATURE_PICKLE}" ]]; then
 fi
 echo "Using feature pickle: ${FEATURE_PICKLE} ($(du -h "${FEATURE_PICKLE}" | cut -f1))"
 
-# InvLM needs raw images (HF CLIP); ViECap pickle alone is not enough
 if [[ ! -d "${NOCAPS_IMG_DIR}/in_domain" && ! -d "${NOCAPS_IMG_DIR}/in-domain" && ! -d "${NOCAPS_IMG_DIR}/val" ]]; then
   echo "ERROR: NoCaps images not found under ${NOCAPS_IMG_DIR}/"
   echo "  Expected one of: in_domain/, in-domain/, or val/"
-  echo "  Download from ViECap checkpoints.zip (annotations/nocaps/) or official NoCaps val images."
   exit 1
 fi
 

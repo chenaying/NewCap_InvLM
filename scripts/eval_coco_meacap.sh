@@ -28,13 +28,11 @@ LOG_FOLDER="logs/${EXP_NAME}_EVAL_MEACAP"
 mkdir -p "${LOG_FOLDER}"
 COCO_LOG_FILE="${LOG_FOLDER}/COCO_MEACAP_${TIME_START}.log"
 
-# Override via environment variables on your server
 LANGUAGE_MODEL="${LANGUAGE_MODEL:-./checkpoints/gpt2}"
 VL_MODEL="${VL_MODEL:-./checkpoints/clip-vit-base-patch32}"
 PARSER_CKPT="${PARSER_CKPT:-./checkpoints/flan-t5-base-VG-factual-sg}"
 WTE_MODEL="${WTE_MODEL:-./checkpoints/all-MiniLM-L6-v2}"
 MEMORY_ID="${MEMORY_ID:-coco}"
-# Set USE_ILR=1 when evaluating checkpoints trained with --use_ilr
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
   ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated}"
