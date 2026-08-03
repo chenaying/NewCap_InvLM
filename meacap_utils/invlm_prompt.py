@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 
 from models.clip_utils import CLIP
 from meacap_utils.detect_utils import retrieve_concepts
-from utils import compose_discrete_prompts, fuse_clip_features
+from utils import compose_discrete_prompts, fuse_clip_features, uses_internal_gated
 
 cpu_device = torch.device('cpu')
 
@@ -116,6 +116,10 @@ def compute_continuous_embeddings(
         if invlm_resources is None or image_path is None:
             raise ValueError('ILR fusion at inference requires MeaCap memory bank and image_path.')
         rt_features = retrieve_memory_rt_features(invlm_resources, image_path)
+        if uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
+            return model.mapping_network(primary, rt_features.unsqueeze(0)).view(
+                -1, args.continuous_prompt_length, model.gpt_hidden_size
+            )
         if getattr(model, 'fusion', None) is not None:
             primary = model.fusion(primary, rt_features.unsqueeze(0))
         else:
