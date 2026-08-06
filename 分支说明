@@ -1,3 +1,4 @@
 2026.8.5
 asstes文件夹中的两张图片为目前的模型架构
 使用内融合纯gated特征融合机制
+该Fusion module设计的架构图在该分支的assets文件里fusion_module_attention.png
