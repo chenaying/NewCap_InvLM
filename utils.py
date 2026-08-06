@@ -148,8 +148,55 @@ class InternalGatedFusion(nn.Module):
         return (1 - g) * q_tokens + g * e_agg
 
 
+class InternalGatedCrossAttnFusion(nn.Module):
+    """Internal gated cross-attention fusion in LM hidden space (inside MappingNetwork).
+
+    Applied after projecting primary/retrieved CLIP features to d_model tokens:
+        e_attn  = CrossAttn(Q=q_tokens, K/V=rtf)
+        g       = sigmoid(MLP([q_token; e_attn_l]))   per token, per-dim
+        q_out   = (1 - g) * q_token + g * e_attn
+    """
+
+    def __init__(self, dim: int = 768, num_heads: int = 8, init_gate: float = 0.2) -> None:
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+            nn.Sigmoid(),
+        )
+        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
+        bias_value = math.log(init_gate / (1 - init_gate))
+        nn.init.zeros_(self.gate[2].weight)
+        nn.init.constant_(self.gate[2].bias, bias_value)
+
+    def forward(self, q_tokens: torch.Tensor, rtf: torch.Tensor) -> torch.Tensor:
+        if rtf.dim() == 2:
+            rtf = rtf.unsqueeze(1)
+        e_attn, _ = self.cross_attn(q_tokens, rtf, rtf)
+        g = self.gate(torch.cat([q_tokens, e_attn], dim=-1))
+        return (1 - g) * q_tokens + g * e_attn
+
+
+def uses_internal_fusion(fusion_type: str) -> bool:
+    return fusion_type in ('internal_gated', 'internal_gated_crossattn')
+
+
 def uses_internal_gated(fusion_type: str) -> bool:
-    return fusion_type == 'internal_gated'
+    return uses_internal_fusion(fusion_type)
+
+
+def build_internal_fusion_module(
+    fusion_type: str,
+    dim: int = 768,
+    num_heads: int = 8,
+) -> Optional[nn.Module]:
+    if fusion_type == 'internal_gated':
+        return InternalGatedFusion(dim)
+    if fusion_type == 'internal_gated_crossattn':
+        return InternalGatedCrossAttnFusion(dim, num_heads)
+    return None
 
 
 def build_fusion_module(fusion_type: str, dim: int = 512) -> Optional[nn.Module]:

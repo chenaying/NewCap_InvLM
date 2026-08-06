@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as nnf
 from typing import Tuple, Optional, List
 from transformers import GPT2LMHeadModel
-from utils import build_fusion_module, InternalGatedFusion, uses_internal_gated
+from utils import build_fusion_module, build_internal_fusion_module, uses_internal_fusion
 
 class MlpTransformer(nn.Module):
 
@@ -134,15 +134,15 @@ class MappingNetwork(nn.Module):
     ) -> None:
         super(MappingNetwork, self).__init__()
         self.clip_project_length = clip_project_length
-        self.use_internal_gated = uses_internal_gated(fusion_type)
+        self.use_internal_fusion = uses_internal_fusion(fusion_type)
         # projector for input
         self.linear = nn.Linear(clip_hidden_size, clip_project_length * d_model)
         # learnable prefix embeddings
         self.prefix_const = nn.Parameter(torch.randn(prefix_length, d_model), requires_grad = True)
         self.transformer = Transformer(d_model, num_layers, num_heads)
-        if self.use_internal_gated:
+        if self.use_internal_fusion:
             self.rt_linear = nn.Linear(clip_hidden_size, d_model)
-            self.internal_fusion = InternalGatedFusion(d_model)
+            self.internal_fusion = build_internal_fusion_module(fusion_type, d_model, num_heads)
         
     def forward(self, x: torch.Tensor, rtf: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -153,7 +153,7 @@ class MappingNetwork(nn.Module):
             the embeddings of prefix with the shape of (batch_size, prefix_length, d_model)
         """
         x = self.linear(x).view(x.shape[0], self.clip_project_length, -1)  # (b, clip_project_length, d_model)
-        if self.use_internal_gated and rtf is not None:
+        if self.use_internal_fusion and rtf is not None:
             rtf = self.rt_linear(rtf)
             x = self.internal_fusion(x, rtf)
         prefix = self.prefix_const.unsqueeze(dim = 0).expand(x.shape[0], *self.prefix_const.shape) # (b, prefix_length, d_model)
@@ -196,7 +196,7 @@ class ClipCaptionModel(nn.Module):
             gpt_type: the language model
             soft_prompt_first: False -> hard prompt + soft prompt; True -> soft prompt + hard prompt
             only_hard_prompt: using the hard prompts only
-            fusion_type: ILR feature fusion ('linear', 'gated', 'crossattn', 'gated_crossattn', or 'internal_gated')
+            fusion_type: ILR feature fusion ('linear', 'gated', 'crossattn', 'gated_crossattn', 'internal_gated', or 'internal_gated_crossattn')
         """
         super(ClipCaptionModel, self).__init__()
         self.soft_prompt_first = soft_prompt_first
@@ -232,12 +232,12 @@ class ClipCaptionModel(nn.Module):
             caption_tokens: caption tokens with a shape of (b, max_length_per_caption)
             hard_prompts_length: list with len = batch size, the length of hard prompts constructed for each caption
             mask: tensor with a shape of (b, discrete_length + continuous_length + max_length_per_caption), valid texts for attention computing
-            retrieved_features: optional (b, K, clip_hidden_size) for internal_gated fusion
+            retrieved_features: optional (b, K, clip_hidden_size) for internal fusion
         Return:
             the output of language model
         """
         caption_embeddings = self.word_embed(caption_tokens)
-        if uses_internal_gated(self.fusion_type):
+        if uses_internal_fusion(self.fusion_type):
             continuous_embeddings = self.mapping_network(continuous_prompt, retrieved_features)
         else:
             continuous_embeddings = self.mapping_network(continuous_prompt)

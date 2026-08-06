@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as nnf
-from utils import noise_injection, fuse_clip_features, uses_internal_gated
+from utils import noise_injection, fuse_clip_features, uses_internal_fusion
 from CaptionsDataset import collate
 from torch.utils.data import DataLoader
 from CaptionsDataset import CaptionsDataset
@@ -82,7 +82,7 @@ def train(
 
             if args.use_ilr:
                 rt_feat = rt_feat.to(device).float()
-                if uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
+                if uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
                     pass
                 elif getattr(model, 'fusion', None) is not None:
                     continuous_prefix = model.fusion(continuous_prefix, rt_feat)
@@ -95,13 +95,13 @@ def train(
 
             with torch.cuda.amp.autocast(enabled = args.use_amp):                
                 if args.using_hard_prompt:
-                    if args.use_ilr and uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
+                    if args.use_ilr and uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
                         outputs = model(continuous_prefix, captions_gpt_tokens, hard_prompts_length, masks, retrieved_features=rt_feat)
                     else:
                         outputs = model(continuous_prefix, captions_gpt_tokens, hard_prompts_length, masks)
                     logits = outputs.logits # (batch_size, max_length, vocab_size)
                 else:
-                    if args.use_ilr and uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
+                    if args.use_ilr and uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
                         outputs = model(continuous_prefix, captions_gpt_tokens, mask=masks, retrieved_features=rt_feat)
                     else:
                         outputs = model(continuous_prefix, captions_gpt_tokens, mask = masks)
@@ -171,7 +171,7 @@ def main():
     parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
     parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion (linear)')
     parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion (linear)')
-    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'crossattn', 'gated_crossattn', 'internal_gated'], help = 'ILR fusion: linear, gated, crossattn, gated_crossattn, or internal_gated')
+    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn'], help = 'ILR fusion: linear, gated, crossattn, gated_crossattn, internal_gated, or internal_gated_crossattn')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')
