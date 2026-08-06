@@ -179,8 +179,43 @@ class InternalGatedCrossAttnFusion(nn.Module):
         return (1 - g) * q_tokens + g * e_attn
 
 
+class InternalResGatedCrossAttnFusion(nn.Module):
+    """Internal residual gated cross-attention fusion (IFCap-style residual + gate).
+
+    IFCap uses Q' = Q + CrossAttn(Q, R). Here the retrieval increment is gated:
+        delta  = CrossAttn(Q=q_tokens, K/V=rtf)
+        g      = sigmoid(MLP([q_token; delta_l]))   per token, per-dim
+        q_out  = q_token + g * delta                 primary always preserved
+    """
+
+    def __init__(self, dim: int = 768, num_heads: int = 8, init_gate: float = 0.2) -> None:
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+            nn.Sigmoid(),
+        )
+        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
+        bias_value = math.log(init_gate / (1 - init_gate))
+        nn.init.zeros_(self.gate[2].weight)
+        nn.init.constant_(self.gate[2].bias, bias_value)
+
+    def forward(self, q_tokens: torch.Tensor, rtf: torch.Tensor) -> torch.Tensor:
+        if rtf.dim() == 2:
+            rtf = rtf.unsqueeze(1)
+        delta, _ = self.cross_attn(q_tokens, rtf, rtf)
+        g = self.gate(torch.cat([q_tokens, delta], dim=-1))
+        return q_tokens + g * delta
+
+
 def uses_internal_fusion(fusion_type: str) -> bool:
-    return fusion_type in ('internal_gated', 'internal_gated_crossattn')
+    return fusion_type in (
+        'internal_gated',
+        'internal_gated_crossattn',
+        'internal_resgated_crossattn',
+    )
 
 
 def uses_internal_gated(fusion_type: str) -> bool:
@@ -196,6 +231,8 @@ def build_internal_fusion_module(
         return InternalGatedFusion(dim)
     if fusion_type == 'internal_gated_crossattn':
         return InternalGatedCrossAttnFusion(dim, num_heads)
+    if fusion_type == 'internal_resgated_crossattn':
+        return InternalResGatedCrossAttnFusion(dim, num_heads)
     return None
 
 
