@@ -215,6 +215,7 @@ def uses_internal_fusion(fusion_type: str) -> bool:
         'internal_gated',
         'internal_gated_crossattn',
         'internal_resgated_crossattn',
+        'internal_ifcap',
     )
 
 
@@ -233,6 +234,9 @@ def build_internal_fusion_module(
         return InternalGatedCrossAttnFusion(dim, num_heads)
     if fusion_type == 'internal_resgated_crossattn':
         return InternalResGatedCrossAttnFusion(dim, num_heads)
+    if fusion_type == 'internal_ifcap':
+        from ifcap_fusion import InternalIFCapFusion
+        return InternalIFCapFusion(dim, num_heads, num_layers=1)
     return None
 
 
