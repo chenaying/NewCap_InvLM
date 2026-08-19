@@ -1,2 +1,436 @@
-2026.8.7
-使用internal_resgated_crossattn
+2026.8.19
+使用weighted_gated
+
+weighted_gated 特征融合机制详解
+weighted_gated 是在 512 维 CLIP 空间 进行的 外融合（External Fusion） 机制：在 MappingNetwork 之前，把主特征 e_primary 与 ILR 检索到的 K 个邻居特征 e_retrieved 融合。它与 gated 共用同一套可学习 per-dimension 门控网络，唯一区别是邻居聚合方式——gated 用等权 mean，weighted_gated 用 余弦相似度 softmax 加权 mean。
+
+原理图已保存至：assets/weighted_gated_fusion_mechanism.png
+
+1. 在整体框架中的位置
+训练/推理
+  ↓
+e_primary (512-d)          e_retrieved (K×512-d)
+  ↓                              ↓
+  └──────── weighted_gated ──────┘   ← 512-d CLIP 空间，MappingNetwork 之前
+              ↓
+         e_fused (512-d)
+              ↓
+      MappingNetwork (512 → L×768)
+              ↓
+      Transformer → Soft Prompt → GPT-2
+与 internal_gated 等内融合不同，weighted_gated 在 CLIP 空间 完成融合，MappingNetwork 只接收已融合后的 e_fused。
+
+2. 输入特征
+特征	形状	训练	推理
+e_primary
+(B, 512)
+带噪声的 text CLIP（当前 caption）
+图像 CLIP
+e_retrieved
+(B, K, 512)
+ILR 离线邻居 Top-K（K=5）
+Memory Bank Top-K 文本 CLIP
+3. 四步计算流程
+Step 1：相似度加权聚合（核心改动）
+对每个邻居 k，计算与 primary 的余弦相似度：
+
+s
+k
+=
+cos
+⁡
+(
+e
+primary
+,
+ 
+e
+retrieved
+k
+)
+=
+e
+primary
+⋅
+e
+retrieved
+k
+∥
+e
+primary
+∥
+⋅
+∥
+e
+retrieved
+k
+∥
+s 
+k
+​
+ =cos(e 
+primary
+​
+ , e 
+retrieved 
+k
+​
+ 
+​
+ )= 
+∥e 
+primary
+​
+ ∥⋅∥e 
+retrieved 
+k
+​
+ 
+​
+ ∥
+e 
+primary
+​
+ ⋅e 
+retrieved 
+k
+​
+ 
+​
+ 
+​
+ 
+用温度 τ 做 softmax 得到权重，再加权求和：
+
+w
+k
+=
+softmax
+ ⁣
+(
+s
+k
+τ
+)
+,
+e
+agg
+=
+∑
+k
+=
+1
+K
+w
+k
+⋅
+e
+retrieved
+k
+w 
+k
+​
+ =softmax( 
+τ
+s 
+k
+​
+ 
+​
+ ),e 
+agg
+​
+ = 
+k=1
+∑
+K
+​
+ w 
+k
+​
+ ⋅e 
+retrieved 
+k
+​
+ 
+​
+ 
+默认 τ = 0.07（CLIP 常用尺度）。对应实现：
+
+
+utils.py
+Lines 94-102
+def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
+    if e_retrieved.dim() == 2:
+        e_retrieved = e_retrieved.unsqueeze(1)
+    scores = torch.sum(
+        nnf.normalize(e_primary, dim=-1).unsqueeze(1) * nnf.normalize(e_retrieved, dim=-1),
+        dim=-1,
+    )
+    weights = torch.softmax(scores / self.temperature, dim=1)
+    e_agg = torch.sum(weights.unsqueeze(-1) * e_retrieved, dim=1)
+与 gated 的对比：
+
+机制	聚合方式	问题
+gated
+e_agg = mean(R_1, ..., R_K)
+弱邻居与强邻居权重相同
+weighted_gated
+e_agg = Σ w_k · R_k，w 由 cos 相似度决定
+弱邻居自动降权，噪声影响更小
+Step 2：门控网络（与 gated 相同）
+拼接 primary 与聚合特征，经 MLP 得到 per-dimension 门控：
+
+g
+=
+σ
+ ⁣
+(
+MLP
+(
+[
+e
+primary
+;
+ 
+e
+agg
+]
+)
+)
+,
+g
+∈
+(
+0
+,
+1
+)
+512
+g=σ(MLP([e 
+primary
+​
+ ; e 
+agg
+​
+ ])),g∈(0,1) 
+512
+ 
+结构：Linear(1024→512) → ReLU → Linear(512→512) → Sigmoid
+初始化：权重为 0，bias = logit(0.2)，初始 
+g
+≈
+0.2
+g≈0.2，与线性融合 0.8/0.2 对齐，训练更稳。
+
+Step 3：门控混合
+e
+fused
+=
+(
+1
+−
+g
+)
+⊙
+e
+primary
++
+g
+⊙
+e
+agg
+e 
+fused
+​
+ =(1−g)⊙e 
+primary
+​
+ +g⊙e 
+agg
+​
+ 
+再 L2 归一化。g 是 逐维 的：不同维度对检索信息的依赖可以不同。
+
+Step 4：下游
+e_fused 送入 MappingNetwork → Transformer → Soft Prompt → 冻结的 GPT-2。
+
+4. 设计动机
+ILR Top-K 里常有 语义弱相关或噪声邻居。等权 mean 会把它们和 top-1 一视同仁；weighted_gated 在门控之前先用 cos 相似度筛一遍，让 e_agg 更偏向与当前 primary 一致的邻居。
+
+两层控制分工：
+
+相似度权重 w_k（非可学习）：按检索质量做样本级筛选
+门控 g（可学习）：按样本与维度决定 primary / agg 混合比例
+5. 温度参数 τ 的影响
+τ 值	softmax 行为	效果
+小（如 0.07）
+分布尖锐
+接近只取 top-1 邻居
+大（如 0.5）
+分布平滑
+更接近等权 mean
+可通过环境变量调节：
+
+FUSION_TYPE=weighted_gated FUSION_TEMPERATURE=0.1 bash scripts/train_coco.sh 0
+6. 训练与推理调用
+训练（main.py）：ILR 开启且非内融合时，走 model.fusion：
+
+
+main.py
+Lines 83-88
+if args.use_ilr:
+    rt_feat = rt_feat.to(device).float()
+    if uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
+        pass
+    elif getattr(model, 'fusion', None) is not None:
+        continuous_prefix = model.fusion(continuous_prefix, rt_feat)
+推理（invlm_prompt.py）：同样调用 model.fusion：
+
+
+invlm_prompt.py
+Lines 123-124
+if getattr(model, 'fusion', None) is not None:
+    primary = model.fusion(primary, rt_features.unsqueeze(0))
+7. 与其他外融合机制对比
+fusion_type	邻居聚合	门控	可学习参数
+linear
+等权 mean
+固定 0.8/0.2
+无
+gated
+等权 mean
+可学习 per-dim
+MLP gate
+weighted_gated
+cos 加权 mean
+可学习 per-dim
+MLP gate
+gated_crossattn
+Cross-Attn
+可学习 per-dim
+Attn + MLP gate
+weighted_gated 实现成本低（无 Cross-Attn），在保留门控自适应的同时，用相似度加权缓解检索噪声，适合作为 gated 的直接改进版做对比实验。
+
+8. 运行示例
+# 训练
+FUSION_TYPE=weighted_gated bash scripts/train_coco.sh 0
+# 评测
+FUSION_TYPE=weighted_gated bash scripts/eval_coco_meacap.sh train_coco 0 14
+# 调整温度
+FUSION_TYPE=weighted_gated FUSION_TEMPERATURE=0.2 bash scripts/train_coco.sh 0
+原理图路径：MeaCapInvLM/assets/weighted_gated_fusion_mechanism.png。
+
+NoCaps数据集评估
+一、脚本对比
+项目	COCO 评测	NoCaps 评测
+脚本
+eval_coco_meacap.sh
+eval_nocaps_meacap.sh
+数据集
+COCO test
+NoCaps val
+标注文件
+annotations/coco/test_captions.json
+annotations/nocaps/nocaps_corpus.json
+特征 pickle
+test_captions_ViT-B32.pickle
+nocaps_corpus_ViT-B32.pickle
+输出
+1 个 coco_generated_captions.json
+4 个：in/near/out/overall
+指标
+单一 CIDEr
+In / Near / Out / Overall 四组 CIDEr
+NoCaps 是 COCO → NoCaps 跨域 评测，通常用 COCO 上训练的权重（如 train_coco epoch 14）。
+
+二、运行前准备
+1. 数据与特征
+需要以下文件：
+
+annotations/nocaps/
+├── nocaps_corpus.json                    # 标注
+├── nocaps_corpus_ViT-B32.pickle          # 预提取 CLIP 特征
+├── in_domain/   或 in-domain/           # 图像（三选一目录结构）
+├── near_domain/ 或 neardomain/
+└── out_domain/  或 outdomain/
+特征 pickle：解压 ViECap 的 checkpoints.zip，或运行 python images_features_extraction.py
+图像：从 NoCaps 官网 下载 val 集，放到 annotations/nocaps/ 下
+2. 模型权重
+默认加载：
+
+checkpoints/train_coco/coco_prefix-0014.pt
+即先在 COCO 上训练，再用 epoch 14 做 NoCaps 跨域评测。
+
+3. MeaCap 记忆库
+默认 MEMORY_ID=coco（COCO 记忆库），与 COCO→NoCaps 跨域设定一致。
+
+三、基本运行命令
+cd /workspace/llh/cyp/project/NewCap   # 项目根目录
+# 基础用法（3 参数）
+bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+#                              ↑实验名  ↑GPU  ↑epoch
+参数含义：
+
+train_coco：实验名，对应 checkpoints/train_coco/coco_prefix-0014.pt
+0：GPU 编号 cuda:0
+14：使用第 14 个 epoch 的权重
+带 ILR / weighted_gated 融合
+USE_ILR=1 FUSION_TYPE=weighted_gated bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+指定记忆库
+MEMORY_ID=coco bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+4 参数写法（兼容 ViECap，传额外参数）
+bash scripts/eval_nocaps_meacap.sh train_coco 0 '--top_k 3 --threshold 0.2' 14
+四、脚本执行流程
+eval_nocaps_meacap.sh 会自动完成两步：
+
+Step 1：生成描述 — 调用 validation.py，--name_of_datasets nocaps，输出 4 个 JSON：
+
+checkpoints/train_coco/
+├── indomain_generated_captions.json
+├── neardomain_generated_captions.json
+├── outdomain_generated_captions.json
+└── overall_generated_captions.json
+Step 2：计算 CIDEr — 分别对 4 个 JSON 跑 evaluation/cocoeval.py：
+
+========================== NOCAPS IN-DOMAIN (MeaCap InvLM) ==============================
+========================== NOCAPS NEAR-DOMAIN (MeaCap InvLM) =============================
+========================== NOCAPS OUT-DOMAIN (MeaCap InvLM) ==============================
+========================== NOCAPS OVERALL (MeaCap InvLM) ================================
+日志保存在：
+
+logs/train_coco_EVAL_MEACAP/NOCAPS_MEACAP_<时间戳>.log
+五、后台运行示例
+nohup bash -c '
+  set -e
+  USE_ILR=1 FUSION_TYPE=weighted_gated \
+    bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+' > eval_nocaps_weighted_gated.log 2>&1 &
+tail -f eval_nocaps_weighted_gated.log
+六、常见报错
+报错	原因	处理
+missing nocaps_corpus_ViT-B32.pickle
+缺少特征文件
+解压 ViECap checkpoints 或运行特征提取脚本
+NoCaps images not found
+图像目录缺失
+下载 NoCaps val 图像到 annotations/nocaps/
+coco_prefix-0014.pt not found
+权重不存在
+先跑 bash scripts/train_coco.sh 0 训练到 epoch 14
+$'\r': command not found
+脚本 CRLF 换行
+运行 sed -i 's/\r$//' scripts/*.sh
+七、完整实验流水线示例
+若刚训练完 COCO 上的 weighted_gated 模型，可按顺序跑：
+
+# 1. COCO 域内评测
+USE_ILR=1 FUSION_TYPE=weighted_gated bash scripts/eval_coco_meacap.sh train_coco 0 14
+# 2. NoCaps 跨域评测（不是 eval_coco_meacap.sh）
+USE_ILR=1 FUSION_TYPE=weighted_gated bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+# 3. Flickr30k 跨域评测（可选）
+USE_ILR=1 FUSION_TYPE=weighted_gated MEMORY_ID=coco \
+  bash scripts/eval_flickr30k_meacap.sh train_coco 0 14
+结论：NoCaps 请用 eval_nocaps_meacap.sh，不要用 eval_coco_meacap.sh。 两者唯一相同的是权重路径格式（checkpoints/<实验名>/coco_prefix-<epoch>.pt），其余数据集配置和评测输出都不同。
+
+
