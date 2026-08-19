@@ -184,7 +184,8 @@ class ClipCaptionModel(nn.Module):
         gpt_type: str = 'gpt2',
         soft_prompt_first: bool = False,
         only_hard_prompt: bool = False,
-        fusion_type: str = 'linear'
+        fusion_type: str = 'linear',
+        fusion_temperature: float = 0.07
     ) -> None:
         """
         Args:
@@ -196,7 +197,8 @@ class ClipCaptionModel(nn.Module):
             gpt_type: the language model
             soft_prompt_first: False -> hard prompt + soft prompt; True -> soft prompt + hard prompt
             only_hard_prompt: using the hard prompts only
-            fusion_type: ILR feature fusion ('linear', 'gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', or 'internal_ifcap')
+            fusion_type: ILR feature fusion ('linear', 'gated', 'weighted_gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', or 'internal_ifcap')
+            fusion_temperature: softmax temperature for weighted_gated neighbor aggregation
         """
         super(ClipCaptionModel, self).__init__()
         self.soft_prompt_first = soft_prompt_first
@@ -209,7 +211,7 @@ class ClipCaptionModel(nn.Module):
         )
         self.gpt_type = gpt_type
         self.fusion_type = fusion_type
-        self.fusion = build_fusion_module(fusion_type, clip_hidden_size)
+        self.fusion = build_fusion_module(fusion_type, clip_hidden_size, fusion_temperature)
     
     def word_embed(self, caption_tokens):
         if 'gpt' in self.gpt_type:

@@ -171,7 +171,8 @@ def main():
     parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
     parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion (linear)')
     parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion (linear)')
-    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', 'internal_ifcap'], help = 'ILR fusion: linear, gated, crossattn, gated_crossattn, internal_gated, internal_gated_crossattn, internal_resgated_crossattn, or internal_ifcap')
+    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'weighted_gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', 'internal_ifcap'], help = 'ILR fusion: linear, gated, weighted_gated, crossattn, gated_crossattn, internal_gated, internal_gated_crossattn, internal_resgated_crossattn, or internal_ifcap')
+    parser.add_argument('--fusion_temperature', type = float, default = 0.07, help = 'softmax temperature for weighted_gated neighbor aggregation')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')
@@ -189,9 +190,9 @@ def main():
         args = args
     )
     if args.frozen_gpt:
-        model = ClipCaptionPrefix(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type)
+        model = ClipCaptionPrefix(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type, fusion_temperature = args.fusion_temperature)
     else:
-        model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type)
+        model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type, fusion_temperature = args.fusion_temperature)
     
     train(args, datasets, model, output_dir = args.out_dir, output_prefix = args.prefix)
 

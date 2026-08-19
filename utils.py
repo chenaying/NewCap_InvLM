@@ -64,6 +64,47 @@ class GatedFusion(nn.Module):
         return nnf.normalize(e_fused, dim=-1)
 
 
+class SimilarityWeightedGatedFusion(nn.Module):
+    """External gated fusion with cosine-similarity weighted neighbor aggregation.
+
+    Equal-weight mean treats a weak top-5 neighbor the same as a strong top-1 one.
+    Here the K neighbors are aggregated by their cosine similarity to the primary
+    feature before the same per-dimension gate is applied:
+        s_k     = cos(e_primary, e_retrieved_k)
+        w       = softmax(s / temperature)              # (B, K)
+        e_agg   = sum_k w_k * e_retrieved_k
+        g       = sigmoid(MLP([e_primary; e_agg]))
+        e_fused = (1 - g) * e_primary + g * e_agg
+    """
+
+    def __init__(self, dim: int = 512, init_gate: float = 0.2, temperature: float = 0.07) -> None:
+        super().__init__()
+        self.temperature = max(temperature, 1e-4)
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+            nn.Sigmoid(),
+        )
+        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
+        bias_value = math.log(init_gate / (1 - init_gate))
+        nn.init.zeros_(self.gate[2].weight)
+        nn.init.constant_(self.gate[2].bias, bias_value)
+
+    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
+        if e_retrieved.dim() == 2:
+            e_retrieved = e_retrieved.unsqueeze(1)
+        scores = torch.sum(
+            nnf.normalize(e_primary, dim=-1).unsqueeze(1) * nnf.normalize(e_retrieved, dim=-1),
+            dim=-1,
+        )
+        weights = torch.softmax(scores / self.temperature, dim=1)
+        e_agg = torch.sum(weights.unsqueeze(-1) * e_retrieved, dim=1)
+        g = self.gate(torch.cat([e_primary, e_agg], dim=-1))
+        e_fused = (1 - g) * e_primary + g * e_agg
+        return nnf.normalize(e_fused, dim=-1)
+
+
 class GatedCrossAttnFusion(nn.Module):
     """External gated cross-attention fusion in CLIP space (before Projector).
 
@@ -240,9 +281,11 @@ def build_internal_fusion_module(
     return None
 
 
-def build_fusion_module(fusion_type: str, dim: int = 512) -> Optional[nn.Module]:
+def build_fusion_module(fusion_type: str, dim: int = 512, temperature: float = 0.07) -> Optional[nn.Module]:
     if fusion_type == 'gated':
         return GatedFusion(dim)
+    if fusion_type == 'weighted_gated':
+        return SimilarityWeightedGatedFusion(dim, temperature=temperature)
     if fusion_type == 'crossattn':
         return CrossAttnFusion(dim)
     if fusion_type == 'gated_crossattn':

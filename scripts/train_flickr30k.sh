@@ -37,6 +37,7 @@ python main.py \
   --fusion_w1 0.8 \
   --fusion_w2 0.2 \
   --fusion_type ${FUSION_TYPE:-gated} \
+  --fusion_temperature ${FUSION_TEMPERATURE:-0.07} \
   --path_of_datasets ./annotations/flickr30k/flickr30k_texts_features_ViT-B32.pickle \
   --out_dir checkpoints/$EXP_NAME \
   --use_amp \
