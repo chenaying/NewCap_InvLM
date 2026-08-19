@@ -1,5 +1,7 @@
 2026.8.19
-使用weighted_gated
+对于Fusion Module模块
+使用weighted_gated。
+机制具体原理图：assets/weighted_gated_fusion_mechanism.png
 
 weighted_gated 特征融合机制详解
 weighted_gated 是在 512 维 CLIP 空间 进行的 外融合（External Fusion） 机制：在 MappingNetwork 之前，把主特征 e_primary 与 ILR 检索到的 K 个邻居特征 e_retrieved 融合。它与 gated 共用同一套可学习 per-dimension 门控网络，唯一区别是邻居聚合方式——gated 用等权 mean，weighted_gated 用 余弦相似度 softmax 加权 mean。
