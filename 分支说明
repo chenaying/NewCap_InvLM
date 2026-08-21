@@ -1,3 +1,9 @@
+2026.8.21
+参考论文：Connect, Collapse, Corrupt: LEARNING CROSS-MODAL TASKS WITH UNI-MODAL DATA
+架构总览
+当前模型在 512-d CLIP 空间 完成 C³ 预处理与 Gated 融合，再经 MappingNetwork（Projector） 映射为 GPT-2 soft prompt，并与 Hard Prompt 拼接解码。
+ C³ + Gated 外融合 + ILR 绘制的架构图，保存在：assets/meacap_c3_gated_ilr_architecture.png
+
 # MeaCapInvLM 分支说明 — update_C3
 
 > 分支：`update_C3`  
