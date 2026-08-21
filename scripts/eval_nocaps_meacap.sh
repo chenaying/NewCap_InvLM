@@ -35,7 +35,13 @@ WTE_MODEL="${WTE_MODEL:-./checkpoints/all-MiniLM-L6-v2}"
 MEMORY_ID="${MEMORY_ID:-coco}"
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
-  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated} --fusion_temperature ${FUSION_TEMPERATURE:-0.07}"
+  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated}"
+fi
+C3_ARGS=""
+if [[ "${REMOVE_MEAN:-0}" == "1" ]]; then
+  C3_ARGS="--remove_mean \
+    --text_embed_mean_path ${TEXT_EMBED_MEAN_PATH:-./annotations/coco/normalized_text_embed_mean.pt} \
+    --image_embed_mean_path ${IMAGE_EMBED_MEAN_PATH:-./annotations/coco/normalized_image_embed_mean.pt}"
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
@@ -51,9 +57,11 @@ if [[ ! -f "${FEATURE_PICKLE}" ]]; then
 fi
 echo "Using feature pickle: ${FEATURE_PICKLE} ($(du -h "${FEATURE_PICKLE}" | cut -f1))"
 
+# InvLM needs raw images (HF CLIP); ViECap pickle alone is not enough
 if [[ ! -d "${NOCAPS_IMG_DIR}/in_domain" && ! -d "${NOCAPS_IMG_DIR}/in-domain" && ! -d "${NOCAPS_IMG_DIR}/val" ]]; then
   echo "ERROR: NoCaps images not found under ${NOCAPS_IMG_DIR}/"
   echo "  Expected one of: in_domain/, in-domain/, or val/"
+  echo "  Download from ViECap checkpoints.zip (annotations/nocaps/) or official NoCaps val images."
   exit 1
 fi
 
@@ -79,6 +87,7 @@ python validation.py \
   --wte_model_path "${WTE_MODEL}" \
   --local_files_only \
   ${ILR_ARGS} \
+  ${C3_ARGS} \
   ${EXTRA_ARGS} \
   2>&1 | tee -a "${NOCAPS_LOG_FILE}"
 

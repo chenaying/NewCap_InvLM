@@ -9,7 +9,13 @@ cd "$(dirname "$0")/.."
 IMAGE_PATH="${1:-images/instance1.jpg}"
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
-  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated} --fusion_temperature ${FUSION_TEMPERATURE:-0.07}"
+  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated}"
+fi
+C3_ARGS=""
+if [[ "${REMOVE_MEAN:-0}" == "1" ]]; then
+  C3_ARGS="--remove_mean \
+    --text_embed_mean_path ${TEXT_EMBED_MEAN_PATH:-./annotations/coco/normalized_text_embed_mean.pt} \
+    --image_embed_mean_path ${IMAGE_EMBED_MEAN_PATH:-./annotations/coco/normalized_image_embed_mean.pt}"
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
@@ -27,4 +33,5 @@ python viecap_inference.py \
   --parser_checkpoint "${PARSER_CKPT:-./checkpoints/flan-t5-base-VG-factual-sg}" \
   --wte_model_path "${WTE_MODEL:-./checkpoints/all-MiniLM-L6-v2}" \
   --local_files_only \
-  ${ILR_ARGS}
+  ${ILR_ARGS} \
+  ${C3_ARGS}

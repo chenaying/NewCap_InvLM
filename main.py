@@ -7,7 +7,13 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as nnf
-from utils import noise_injection, fuse_clip_features, uses_internal_fusion
+from utils import (
+    fuse_clip_features,
+    uses_internal_gated,
+    load_embed_means,
+    preprocess_clip_primary,
+    preprocess_clip_neighbors,
+)
 from CaptionsDataset import collate
 from torch.utils.data import DataLoader
 from CaptionsDataset import CaptionsDataset
@@ -54,6 +60,9 @@ def train(
     tokenizer = dataloader.dataset.tokenizer
     schedular = get_linear_schedule_with_warmup(optimizer, num_warmup_steps = warmup_steps, num_training_steps = epochs * len(dataloader))
     scaler = torch.cuda.amp.GradScaler(enabled = args.use_amp)
+    embed_means = load_embed_means(args, device)
+    if args.remove_mean:
+        print(f'C3 Collapse enabled: text={args.text_embed_mean_path}, image={args.image_embed_mean_path}')
     for epoch in range(epochs):
         # visualization
         sys.stdout.flush()
@@ -76,15 +85,21 @@ def train(
             else:
                 continuous_prefix = captions_clip.to(device).float() # caption_clip -> embeddings, (b, clip_hidden_size)
 
-            if args.normalize_prefix:
-                continuous_prefix /= continuous_prefix.norm(2, dim = -1, keepdim = True)
-            continuous_prefix = noise_injection(continuous_prefix, variance = args.noise_variance, device = args.device)
+            continuous_prefix = preprocess_clip_primary(
+                continuous_prefix,
+                args,
+                embed_means,
+                modality='text',
+                corrupt=True,
+                device=device,
+            )
 
             if args.use_ilr:
                 rt_feat = rt_feat.to(device).float()
-                if uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
+                rt_feat = preprocess_clip_neighbors(rt_feat, args, embed_means)
+                if uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
                     pass
-                elif getattr(model, 'fusion', None) is not None:
+                elif getattr(args, 'fusion_type', 'linear') == 'gated':
                     continuous_prefix = model.fusion(continuous_prefix, rt_feat)
                 else:
                     continuous_prefix = fuse_clip_features(
@@ -95,13 +110,13 @@ def train(
 
             with torch.cuda.amp.autocast(enabled = args.use_amp):                
                 if args.using_hard_prompt:
-                    if args.use_ilr and uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
+                    if args.use_ilr and uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
                         outputs = model(continuous_prefix, captions_gpt_tokens, hard_prompts_length, masks, retrieved_features=rt_feat)
                     else:
                         outputs = model(continuous_prefix, captions_gpt_tokens, hard_prompts_length, masks)
                     logits = outputs.logits # (batch_size, max_length, vocab_size)
                 else:
-                    if args.use_ilr and uses_internal_fusion(getattr(args, 'fusion_type', 'linear')):
+                    if args.use_ilr and uses_internal_gated(getattr(args, 'fusion_type', 'linear')):
                         outputs = model(continuous_prefix, captions_gpt_tokens, mask=masks, retrieved_features=rt_feat)
                     else:
                         outputs = model(continuous_prefix, captions_gpt_tokens, mask = masks)
@@ -159,6 +174,11 @@ def main():
     parser.add_argument('--path_of_datasets', default = './annotations/coco/coco_with_entities.pickle')
     parser.add_argument('--out_dir', default = './checkpoints', help = 'the path of output')
     parser.add_argument('--normalize_prefix', dest = 'normalize_prefix', type = int, default = True, help = 'normalizing prefix')
+    parser.add_argument('--remove_mean', action = 'store_true', default = False, help = 'C3 Collapse: subtract modality mean before corrupt/ILR/fusion')
+    parser.add_argument('--re_normalize_prefix', action='store_true', default=True, help='L2 re-normalize after C3 collapse/corrupt')
+    parser.add_argument('--no_re_normalize_prefix', dest='re_normalize_prefix', action='store_false', help='disable L2 re-normalize after C3 collapse/corrupt')
+    parser.add_argument('--text_embed_mean_path', default = './annotations/coco/normalized_text_embed_mean.pt', help = 'precomputed text CLIP mean for C3 Collapse')
+    parser.add_argument('--image_embed_mean_path', default = './annotations/coco/normalized_image_embed_mean.pt', help = 'precomputed image CLIP mean for C3 Collapse')
     parser.add_argument('--name_of_objects_vocabs', default = 'visual_genome_entities')
     parser.add_argument('--path_of_objects_vocabs', default = './annotations/vocabulary/all_objects_attributes_relationships.pickle')
     parser.add_argument('--frozen_gpt', action = 'store_true', default = False, help = 'freezing language models during training')
@@ -171,8 +191,7 @@ def main():
     parser.add_argument('--ilr_neighbors_path', default = '', help = 'JSON from ilr/build_ilr_neighbors.py')
     parser.add_argument('--fusion_w1', type = float, default = 0.8, help = 'weight for primary feature in ILR fusion (linear)')
     parser.add_argument('--fusion_w2', type = float, default = 0.2, help = 'weight for retrieved mean feature in ILR fusion (linear)')
-    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'weighted_gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', 'internal_ifcap'], help = 'ILR fusion: linear, gated, weighted_gated, crossattn, gated_crossattn, internal_gated, internal_gated_crossattn, internal_resgated_crossattn, or internal_ifcap')
-    parser.add_argument('--fusion_temperature', type = float, default = 0.07, help = 'softmax temperature for weighted_gated neighbor aggregation')
+    parser.add_argument('--fusion_type', default = 'linear', choices = ['linear', 'gated', 'internal_gated'], help = 'ILR fusion: linear, gated (external), or internal_gated (inside Projector)')
 
     args = parser.parse_args()
     print(f'args: {vars(args)}')
@@ -190,9 +209,9 @@ def main():
         args = args
     )
     if args.frozen_gpt:
-        model = ClipCaptionPrefix(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type, fusion_temperature = args.fusion_temperature)
+        model = ClipCaptionPrefix(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type)
     else:
-        model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type, fusion_temperature = args.fusion_temperature)
+        model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, args.num_layers, gpt_type = args.language_model, soft_prompt_first = args.soft_prompt_first, only_hard_prompt = args.only_hard_prompt, fusion_type = args.fusion_type)
     
     train(args, datasets, model, output_dir = args.out_dir, output_prefix = args.prefix)
 

@@ -1,4 +1,5 @@
 import math
+import os
 import torch
 import torch.nn as nn
 import random
@@ -64,101 +65,6 @@ class GatedFusion(nn.Module):
         return nnf.normalize(e_fused, dim=-1)
 
 
-class SimilarityWeightedGatedFusion(nn.Module):
-    """External gated fusion with cosine-similarity weighted neighbor aggregation.
-
-    Equal-weight mean treats a weak top-5 neighbor the same as a strong top-1 one.
-    Here the K neighbors are aggregated by their cosine similarity to the primary
-    feature before the same per-dimension gate is applied:
-        s_k     = cos(e_primary, e_retrieved_k)
-        w       = softmax(s / temperature)              # (B, K)
-        e_agg   = sum_k w_k * e_retrieved_k
-        g       = sigmoid(MLP([e_primary; e_agg]))
-        e_fused = (1 - g) * e_primary + g * e_agg
-    """
-
-    def __init__(self, dim: int = 512, init_gate: float = 0.2, temperature: float = 0.07) -> None:
-        super().__init__()
-        self.temperature = max(temperature, 1e-4)
-        self.gate = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.ReLU(),
-            nn.Linear(dim, dim),
-            nn.Sigmoid(),
-        )
-        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
-        bias_value = math.log(init_gate / (1 - init_gate))
-        nn.init.zeros_(self.gate[2].weight)
-        nn.init.constant_(self.gate[2].bias, bias_value)
-
-    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
-        if e_retrieved.dim() == 2:
-            e_retrieved = e_retrieved.unsqueeze(1)
-        scores = torch.sum(
-            nnf.normalize(e_primary, dim=-1).unsqueeze(1) * nnf.normalize(e_retrieved, dim=-1),
-            dim=-1,
-        )
-        weights = torch.softmax(scores / self.temperature, dim=1)
-        e_agg = torch.sum(weights.unsqueeze(-1) * e_retrieved, dim=1)
-        g = self.gate(torch.cat([e_primary, e_agg], dim=-1))
-        e_fused = (1 - g) * e_primary + g * e_agg
-        return nnf.normalize(e_fused, dim=-1)
-
-
-class GatedCrossAttnFusion(nn.Module):
-    """External gated cross-attention fusion in CLIP space (before Projector).
-
-    Cross-attention replaces mean pooling over K retrieved neighbors; the gate
-    then blends primary and attended retrieval features per dimension:
-        e_attn  = CrossAttn(Q=e_primary, K/V=e_retrieved)
-        g       = sigmoid(MLP([e_primary; e_attn]))
-        e_fused = (1 - g) * e_primary + g * e_attn
-    """
-
-    def __init__(self, dim: int = 512, num_heads: int = 8, init_gate: float = 0.2) -> None:
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.gate = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.ReLU(),
-            nn.Linear(dim, dim),
-            nn.Sigmoid(),
-        )
-        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
-        bias_value = math.log(init_gate / (1 - init_gate))
-        nn.init.zeros_(self.gate[2].weight)
-        nn.init.constant_(self.gate[2].bias, bias_value)
-
-    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
-        if e_retrieved.dim() == 2:
-            e_retrieved = e_retrieved.unsqueeze(1)
-        q = e_primary.unsqueeze(1)
-        e_attn, _ = self.cross_attn(q, e_retrieved, e_retrieved)
-        e_attn = e_attn.squeeze(1)
-        g = self.gate(torch.cat([e_primary, e_attn], dim=-1))
-        e_fused = (1 - g) * e_primary + g * e_attn
-        return nnf.normalize(e_fused, dim=-1)
-
-
-class CrossAttnFusion(nn.Module):
-    """External cross-attention fusion in CLIP space (before Projector).
-
-    No gating: the fused feature is the attention-weighted retrieval vector only:
-        e_fused = normalize(CrossAttn(Q=e_primary, K/V=e_retrieved))
-    """
-
-    def __init__(self, dim: int = 512, num_heads: int = 8) -> None:
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-
-    def forward(self, e_primary: torch.Tensor, e_retrieved: torch.Tensor) -> torch.Tensor:
-        if e_retrieved.dim() == 2:
-            e_retrieved = e_retrieved.unsqueeze(1)
-        q = e_primary.unsqueeze(1)
-        e_attn, _ = self.cross_attn(q, e_retrieved, e_retrieved)
-        return nnf.normalize(e_attn.squeeze(1), dim=-1)
-
-
 class InternalGatedFusion(nn.Module):
     """Internal gated fusion in LM hidden space (inside MappingNetwork).
 
@@ -189,79 +95,24 @@ class InternalGatedFusion(nn.Module):
         return (1 - g) * q_tokens + g * e_agg
 
 
-class InternalGatedCrossAttnFusion(nn.Module):
-    """Internal gated cross-attention fusion in LM hidden space (inside MappingNetwork).
-
-    Applied after projecting primary/retrieved CLIP features to d_model tokens:
-        e_attn  = CrossAttn(Q=q_tokens, K/V=rtf)
-        g       = sigmoid(MLP([q_token; e_attn_l]))   per token, per-dim
-        q_out   = (1 - g) * q_token + g * e_attn
-    """
-
-    def __init__(self, dim: int = 768, num_heads: int = 8, init_gate: float = 0.2) -> None:
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.gate = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.ReLU(),
-            nn.Linear(dim, dim),
-            nn.Sigmoid(),
-        )
-        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
-        bias_value = math.log(init_gate / (1 - init_gate))
-        nn.init.zeros_(self.gate[2].weight)
-        nn.init.constant_(self.gate[2].bias, bias_value)
-
-    def forward(self, q_tokens: torch.Tensor, rtf: torch.Tensor) -> torch.Tensor:
-        if rtf.dim() == 2:
-            rtf = rtf.unsqueeze(1)
-        e_attn, _ = self.cross_attn(q_tokens, rtf, rtf)
-        g = self.gate(torch.cat([q_tokens, e_attn], dim=-1))
-        return (1 - g) * q_tokens + g * e_attn
-
-
-class InternalResGatedCrossAttnFusion(nn.Module):
-    """Internal residual gated cross-attention fusion (IFCap-style residual + gate).
-
-    IFCap uses Q' = Q + CrossAttn(Q, R). Here the retrieval increment is gated:
-        delta  = CrossAttn(Q=q_tokens, K/V=rtf)
-        g      = sigmoid(MLP([q_token; delta_l]))   per token, per-dim
-        q_out  = q_token + g * delta                 primary always preserved
-    """
-
-    def __init__(self, dim: int = 768, num_heads: int = 8, init_gate: float = 0.2) -> None:
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.gate = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.ReLU(),
-            nn.Linear(dim, dim),
-            nn.Sigmoid(),
-        )
-        init_gate = min(max(init_gate, 1e-4), 1 - 1e-4)
-        bias_value = math.log(init_gate / (1 - init_gate))
-        nn.init.zeros_(self.gate[2].weight)
-        nn.init.constant_(self.gate[2].bias, bias_value)
-
-    def forward(self, q_tokens: torch.Tensor, rtf: torch.Tensor) -> torch.Tensor:
-        if rtf.dim() == 2:
-            rtf = rtf.unsqueeze(1)
-        delta, _ = self.cross_attn(q_tokens, rtf, rtf)
-        g = self.gate(torch.cat([q_tokens, delta], dim=-1))
-        return q_tokens + g * delta
+def uses_internal_gated(fusion_type: str) -> bool:
+    return fusion_type == 'internal_gated'
 
 
 def uses_internal_fusion(fusion_type: str) -> bool:
-    return fusion_type in (
-        'internal_gated',
-        'internal_gated_crossattn',
-        'internal_resgated_crossattn',
-        'internal_ifcap',
-    )
+    """Backward-compatible alias for update_6.0 ClipCap.py."""
+    return uses_internal_gated(fusion_type)
 
 
-def uses_internal_gated(fusion_type: str) -> bool:
-    return uses_internal_fusion(fusion_type)
+def build_fusion_module(
+    fusion_type: str,
+    dim: int = 512,
+    temperature: float = 0.07,
+) -> Optional[nn.Module]:
+    """Build external ILR fusion module (gated only in this branch)."""
+    if fusion_type == 'gated':
+        return GatedFusion(dim)
+    return None
 
 
 def build_internal_fusion_module(
@@ -269,27 +120,9 @@ def build_internal_fusion_module(
     dim: int = 768,
     num_heads: int = 8,
 ) -> Optional[nn.Module]:
+    """Build internal ILR fusion module (internal_gated only in this branch)."""
     if fusion_type == 'internal_gated':
         return InternalGatedFusion(dim)
-    if fusion_type == 'internal_gated_crossattn':
-        return InternalGatedCrossAttnFusion(dim, num_heads)
-    if fusion_type == 'internal_resgated_crossattn':
-        return InternalResGatedCrossAttnFusion(dim, num_heads)
-    if fusion_type == 'internal_ifcap':
-        from ifcap_fusion import InternalIFCapFusion
-        return InternalIFCapFusion(dim, num_heads, num_layers=1)
-    return None
-
-
-def build_fusion_module(fusion_type: str, dim: int = 512, temperature: float = 0.07) -> Optional[nn.Module]:
-    if fusion_type == 'gated':
-        return GatedFusion(dim)
-    if fusion_type == 'weighted_gated':
-        return SimilarityWeightedGatedFusion(dim, temperature=temperature)
-    if fusion_type == 'crossattn':
-        return CrossAttnFusion(dim)
-    if fusion_type == 'gated_crossattn':
-        return GatedCrossAttnFusion(dim)
     return None
 
 
@@ -310,6 +143,111 @@ def noise_injection(x, variance = 0.001, device = 'cuda:0') -> torch.Tensor:
     x = x + (torch.randn(x.shape, device = device) * std)
 
     return torch.nn.functional.normalize(x, dim = -1)
+
+
+def load_embed_mean(path: str, device: torch.device = torch.device('cpu')) -> torch.Tensor:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'Embedding mean not found: {path}')
+    obj = torch.load(path, map_location=device)
+    if isinstance(obj, dict):
+        obj = obj.get('mean', obj.get('embed_mean'))
+    return obj.float().view(-1)
+
+
+def load_embed_means(args, device: torch.device) -> Optional[dict]:
+    """Load C3 modality means when --remove_mean is enabled."""
+    if not getattr(args, 'remove_mean', False):
+        return None
+    text_mean = load_embed_mean(args.text_embed_mean_path, device)
+    image_mean = load_embed_mean(args.image_embed_mean_path, device)
+    return {'text': text_mean, 'image': image_mean}
+
+
+def collapse_clip_features(
+    x: torch.Tensor,
+    mean: torch.Tensor,
+    re_normalize: bool = True,
+) -> torch.Tensor:
+    """C3 Collapse: subtract modality mean and optionally L2 re-normalize."""
+    mean = mean.to(device=x.device, dtype=x.dtype)
+    while mean.dim() < x.dim():
+        mean = mean.unsqueeze(0)
+    x = x - mean
+    if re_normalize:
+        x = nnf.normalize(x, dim=-1)
+    return x
+
+
+def apply_c3_corrupt(
+    x: torch.Tensor,
+    variance: float,
+    device: torch.device,
+    re_normalize: bool = True,
+) -> torch.Tensor:
+    """C3 Corrupt: Gaussian noise in ambient space (after collapse, before optional re-norm)."""
+    if variance <= 0.0:
+        return x
+    std = math.sqrt(variance)
+    x = x + torch.randn(x.shape, device=device, dtype=x.dtype) * std
+    if re_normalize:
+        x = nnf.normalize(x, dim=-1)
+    return x
+
+
+def preprocess_clip_primary(
+    x: torch.Tensor,
+    args,
+    embed_means: Optional[dict],
+    *,
+    modality: str,
+    corrupt: bool,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    C3 preprocessing for primary CLIP features (before ILR / fusion / Projector).
+
+    Training (text):  norm → collapse(μ_text) → corrupt → re-norm
+    Inference (image): norm → collapse(μ_image) → re-norm
+    Legacy (remove_mean=False): norm → noise_injection (training) or norm only (inference)
+    """
+    re_normalize = bool(getattr(args, 're_normalize_prefix', True))
+    normalize = bool(getattr(args, 'normalize_prefix', True))
+    remove_mean = bool(getattr(args, 'remove_mean', False))
+    variance = float(getattr(args, 'noise_variance', 0.016))
+
+    if normalize:
+        x = nnf.normalize(x, dim=-1)
+
+    if remove_mean:
+        if embed_means is None:
+            raise ValueError('remove_mean=True requires embed_means from load_embed_means().')
+        mean_key = 'text' if modality == 'text' else 'image'
+        x = collapse_clip_features(x, embed_means[mean_key], re_normalize=False)
+        if corrupt:
+            x = apply_c3_corrupt(x, variance, device, re_normalize=re_normalize)
+        elif re_normalize:
+            x = nnf.normalize(x, dim=-1)
+        return x
+
+    if corrupt:
+        x = noise_injection(x, variance=variance, device=str(device))
+    return x
+
+
+def preprocess_clip_neighbors(
+    rt_feat: torch.Tensor,
+    args,
+    embed_means: Optional[dict],
+) -> torch.Tensor:
+    """C3 collapse for ILR / memory neighbors (always text modality at train and inference)."""
+    if not getattr(args, 'remove_mean', False):
+        return rt_feat
+    if embed_means is None:
+        raise ValueError('remove_mean=True requires embed_means from load_embed_means().')
+    re_normalize = bool(getattr(args, 're_normalize_prefix', True))
+    if bool(getattr(args, 'normalize_prefix', True)):
+        rt_feat = nnf.normalize(rt_feat, dim=-1)
+    return collapse_clip_features(rt_feat, embed_means['text'], re_normalize=re_normalize)
 
 def entities_process(
     args,

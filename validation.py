@@ -98,7 +98,6 @@ def validation_nocaps(
             image = preprocess(Image.open(image_path)).unsqueeze(dim=0).to(device)
             image_features = encoder.encode_image(image).float()
 
-        image_features /= image_features.norm(2, dim=-1, keepdim=True)
         continuous_embeddings = compute_continuous_embeddings(
             args, model, image_features, invlm_resources, image_path
         )
@@ -179,7 +178,6 @@ def validation_coco_flickr30k(
             image = preprocess(Image.open(image_path)).unsqueeze(dim=0).to(device)
             image_features = encoder.encode_image(image).float()
 
-        image_features /= image_features.norm(2, dim=-1, keepdim=True)
         continuous_embeddings = compute_continuous_embeddings(
             args, model, image_features, invlm_resources, image_path
         )
@@ -269,7 +267,6 @@ def main(args) -> None:
         clip_hidden_size,
         gpt_type=args.language_model,
         fusion_type=getattr(args, 'fusion_type', 'linear'),
-        fusion_temperature=getattr(args, 'fusion_temperature', 0.07),
     )
     ckpt = torch.load(args.weight_path, map_location=device)
     missing, unexpected = model.load_state_dict(ckpt, strict=False)
@@ -342,8 +339,15 @@ if __name__ == '__main__':
     parser.add_argument('--use_ilr', action='store_true', default=False)
     parser.add_argument('--fusion_w1', type=float, default=0.8)
     parser.add_argument('--fusion_w2', type=float, default=0.2)
-    parser.add_argument('--fusion_type', default='linear', choices=['linear', 'gated', 'weighted_gated', 'crossattn', 'gated_crossattn', 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', 'internal_ifcap'])
-    parser.add_argument('--fusion_temperature', type=float, default=0.07)
+    parser.add_argument('--fusion_type', default='linear', choices=['linear', 'gated', 'internal_gated'])
+
+    # C3 Collapse (must match training when --remove_mean was used)
+    parser.add_argument('--remove_mean', action='store_true', default=False)
+    parser.add_argument('--re_normalize_prefix', action='store_true', default=True)
+    parser.add_argument('--no_re_normalize_prefix', dest='re_normalize_prefix', action='store_false')
+    parser.add_argument('--text_embed_mean_path', default='./annotations/coco/normalized_text_embed_mean.pt')
+    parser.add_argument('--image_embed_mean_path', default='./annotations/coco/normalized_image_embed_mean.pt')
+    parser.add_argument('--normalize_prefix', dest='normalize_prefix', type=int, default=True)
 
     args = parser.parse_args()
     print('args: {}\n'.format(vars(args)))

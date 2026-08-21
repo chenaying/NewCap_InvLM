@@ -36,7 +36,13 @@ MEMORY_ID="${MEMORY_ID:-flickr30k}"
 MEMORY_CAPTION_NUM="${MEMORY_CAPTION_NUM:-5}"
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
-  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated} --fusion_temperature ${FUSION_TEMPERATURE:-0.07}"
+  ILR_ARGS="--use_ilr --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type ${FUSION_TYPE:-gated}"
+fi
+C3_ARGS=""
+if [[ "${REMOVE_MEAN:-0}" == "1" ]]; then
+  C3_ARGS="--remove_mean \
+    --text_embed_mean_path ${TEXT_EMBED_MEAN_PATH:-./annotations/flickr30k/normalized_text_embed_mean.pt} \
+    --image_embed_mean_path ${IMAGE_EMBED_MEAN_PATH:-./annotations/flickr30k/normalized_image_embed_mean.pt}"
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
@@ -74,6 +80,7 @@ python validation.py \
   --wte_model_path "${WTE_MODEL}" \
   --local_files_only \
   ${ILR_ARGS} \
+  ${C3_ARGS} \
   ${EXTRA_ARGS} \
   2>&1 | tee -a "${FLICKR_LOG_FILE}"
 
