@@ -3,6 +3,12 @@
 使用weighted_gated。
 机制具体原理图：assets/weighted_gated_fusion_mechanism.png
 
+update_6.0 分支同时包含 gated、internal_gated 和 gated_crossattn，而且不止这三种——它是目前 Fusion Module 选项最全的分支，共 9 种 ILR 特征融合机制。
+完整融合类型列表
+main.py / validation.py 中 --fusion_type 的可选值为：
+['linear', 'gated', 'weighted_gated', 'crossattn', 'gated_crossattn',
+ 'internal_gated', 'internal_gated_crossattn', 'internal_resgated_crossattn', 'internal_ifcap']
+
 weighted_gated 特征融合机制详解
 weighted_gated 是在 512 维 CLIP 空间 进行的 外融合（External Fusion） 机制：在 MappingNetwork 之前，把主特征 e_primary 与 ILR 检索到的 K 个邻居特征 e_retrieved 融合。它与 gated 共用同一套可学习 per-dimension 门控网络，唯一区别是邻居聚合方式——gated 用等权 mean，weighted_gated 用 余弦相似度 softmax 加权 mean。
 
