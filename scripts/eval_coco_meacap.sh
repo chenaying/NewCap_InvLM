@@ -34,6 +34,7 @@ VL_MODEL="${VL_MODEL:-./checkpoints/clip-vit-base-patch32}"
 PARSER_CKPT="${PARSER_CKPT:-./checkpoints/flan-t5-base-VG-factual-sg}"
 WTE_MODEL="${WTE_MODEL:-./checkpoints/all-MiniLM-L6-v2}"
 MEMORY_ID="${MEMORY_ID:-coco}"
+MEMORY_CAPTION_NUM="${MEMORY_CAPTION_NUM:-5}"
 # Set USE_ILR=1 when evaluating checkpoints trained with --use_ilr
 ILR_ARGS=""
 if [[ "${USE_ILR:-0}" == "1" ]]; then
@@ -74,7 +75,7 @@ python validation.py \
   --soft_prompt_first \
   --use_meacap_invlm \
   --memory_id "${MEMORY_ID}" \
-  --memory_caption_num 5 \
+  --memory_caption_num "${MEMORY_CAPTION_NUM}" \
   --vl_model "${VL_MODEL}" \
   --parser_checkpoint "${PARSER_CKPT}" \
   --wte_model_path "${WTE_MODEL}" \

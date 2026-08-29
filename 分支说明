@@ -1,358 +1,406 @@
-# MeaCapInvLM 分支说明 — update_C3
+# MeaCapInvLM 分支说明 — updated_7.0
 
-> 分支：`update_C3`  
+> 分支：`updated_7.0`  
 > 仓库：https://github.com/chenaying/NewCap_InvLM  
-> 更新日期：2026-08-21  
-> 核心配置：**C³ 预处理 + Gated 外融合 + ILR + Hard Prompt + MeaCap InvLM 推理**
+> 更新日期：2026-08-29  
+> 核心配置：**Gated 外融合 + ILR + Hard Prompt + MeaCap InvLM 推理**（可选 C³ 预处理）
 
 ---
 
 ## 1. 分支定位
 
-本分支在 MeaCapInvLM（CapDec / ViECap 系）基础上，集成：
+`updated_7.0` 在 MeaCapInvLM（ViECap / CapDec 系）基础上整合并稳定化以下能力：
 
-| 模块 | 来源 / 作用 |
-|------|-------------|
+| 模块 | 作用 |
+|------|------|
 | **Connect** | CLIP 文本特征 → MappingNetwork → GPT-2（单模态文本训练） |
-| **C³ Collapse** | 减去模态均值 μ，缩小 CLIP 空间 Modality Gap |
-| **C³ Corrupt** | 训练时对文本 CLIP 特征加高斯噪声（默认 variance=0.016） |
-| **ILR** | Instance-Level Retrieval，离线 Top-K 文本邻居 + 推理记忆库检索 |
+| **ILR** | Instance-Level Retrieval：离线 Top-K 文本邻居 + 推理记忆库检索 |
 | **Gated 外融合** | 512-d CLIP 空间可学习逐维门控融合（Projector 之前） |
 | **Hard Prompt** | 训练：NLTK 实体；推理：MeaCap 记忆库 + Flan-T5 场景图 |
+| **C³（可选）** | Collapse（减均值）+ Corrupt（训练噪声），缩小 Modality Gap |
+| **internal_gated（可选）** | Projector 内部门控融合 |
 
-架构示意图：`assets/meacap_c3_gated_ilr_architecture.png`
+相对 `update_C3` 的本分支更新：
+
+- 评测脚本统一支持 `MEMORY_CAPTION_NUM` 环境变量（COCO / Flickr / NoCaps）
+- 补充架构示意图（`assets/`）
+- 完善 ilr_k / ilr_variance / noise_variance 消融实验流程
+- 明确训练—推理参数对齐规则
+
+架构示意图：
+
+- `assets/gated_fusion_mechanism_simple.png` — Gated 外融合
+- `assets/weighted_gated_fusion_mechanism_simple.png` — 加权 Gated（update_6.0 参考）
+- `assets/gated_crossattn_mechanism_simple.png` — 门控交叉注意力（update_3.0 参考）
+- `assets/meacap_c3_gated_ilr_architecture.png` — C³ + Gated + ILR 总览（若存在）
 
 ---
 
 ## 2. 整体架构
 
-### 2.1 数据流（推荐配置：REMOVE_MEAN=1 + FUSION_TYPE=gated + use_ilr）
+### 2.1 推荐配置（Gated + ILR，默认不启用 C³）
 
 ```
 训练（文本 CLIP）:
-  Caption → CLIP Text Encoder (512-d)
-    → C³: L2 norm → −μ_text → +noise → re-norm
-    → ILR 邻居 (K 个文本 CLIP, −μ_text)
-    → Gated 外融合: e_fused = (1−g)⊙e + g⊙mean(rt)
+  Caption → 预提取 CLIP Text Feature (512-d)
+    → [可选 C³] L2 norm → −μ_text → +noise → re-norm
+    → [默认] L2 norm → noise_injection(noise_variance)
+    → ILR 离线邻居 (K 个文本 CLIP, shape B×K×512)
+    → Gated 外融合: e_fused = (1−g)⊙e + g⊙mean(neighbors)
     → MappingNetwork (512→768, 10 soft tokens)
-    → [Soft Prompt + Hard Prompt(NLTK)] → Frozen GPT-2 → CE Loss
+    → [Soft Prompt + Hard Prompt(NLTK)] → GPT-2 → CE Loss
 
 推理（图像 CLIP）:
   Image → CLIP Image Encoder (512-d)
-    → C³: L2 norm → −μ_image → re-norm（无 Corrupt）
-    → MeaCap 记忆库 Cosine Top-K → K 个文本 CLIP (−μ_text)
+    → [可选 C³] L2 norm → −μ_image → re-norm（无 Corrupt）
+    → MeaCap 记忆库 Cosine Top-K → K 条 memory caption 的文本 CLIP
     → Gated 外融合（与训练共享 fusion 权重）
     → MappingNetwork
-    → [Soft Prompt + Hard Prompt(MeaCap InvLM)] → Frozen GPT-2 → Caption
+    → [Soft Prompt + Hard Prompt(MeaCap InvLM)] → GPT-2 → Caption
 ```
 
-### 2.2 与 update_6.0 / update_gated_fusion 的差异
+### 2.2 数据流关键节点
 
-| 对比项 | update_gated_fusion | update_6.0 | **update_C3（本分支）** |
-|--------|---------------------|------------|-------------------------|
-| Gated 外融合 | ✓ | ✓ | ✓ |
-| internal_gated 内融合 | ✗ | ✓ | ✓（可选） |
-| weighted_gated / crossattn 等 | ✗ | ✓ | ✗（已移除） |
-| C³ remove_mean | ✗ | ✗ | ✓ |
-| compute_embed_means.py | ✗ | ✗ | ✓ |
+| 阶段 | Primary 特征 | 邻居特征 | 融合位置 |
+|------|-------------|---------|---------|
+| 训练 | 文本 CLIP (+噪声) | ILR JSON 预计算 Top-K | GatedFusion（512-d） |
+| 推理 | 图像 CLIP | 记忆库检索 Top-K | GatedFusion（512-d） |
+
+### 2.3 与历史分支对比
+
+| 对比项 | update_gated_fusion | update_6.0 | update_C3 | **updated_7.0（本分支）** |
+|--------|---------------------|------------|-----------|---------------------------|
+| Gated 外融合 | ✓ | ✓ | ✓ | ✓ |
+| ILR | ✓ | ✓ | ✓ | ✓ |
+| C³ remove_mean | ✗ | ✗ | ✓ | ✓（可选） |
+| internal_gated | ✗ | ✓ | ✓ | ✓（可选） |
+| weighted_gated 等 | ✗ | ✓ | ✗ | ✗ |
+| eval MEMORY_CAPTION_NUM | ✗ | 部分 | ✗ | **✓ 全部** |
+| 消融实验文档 | ✗ | ✗ | 部分 | **✓ 完整** |
 
 ---
 
 ## 3. 核心模块详解
 
-### 3.1 C³ 预处理（`utils.py`）
-
-**Connect**：沿用 CapDec 思路，在 CLIP 对比空间用文本特征训练 Mapper。
-
-**Collapse（`--remove_mean`）**：
-
-```python
-# 训练 primary（文本）
-e' = normalize(e_text) - μ_text
-
-# 推理 primary（图像）
-e' = normalize(e_image) - μ_image
-
-# ILR / 记忆库邻居（始终文本）
-rt' = normalize(rt) - μ_text
-```
-
-μ 由 `compute_embed_means.py` 离线计算，分别保存为：
-- COCO: `annotations/coco/normalized_text_embed_mean.pt`, `normalized_image_embed_mean.pt`
-- Flickr30k: `annotations/flickr30k/normalized_*_embed_mean.pt`
-
-**Corrupt（仅训练）**：
-
-```python
-e'' = normalize(e' + sqrt(0.016) * ε),  ε ~ N(0,I)
-```
-
-推理阶段 **不加噪声**。
-
-**关键函数**：
-- `preprocess_clip_primary()` — primary 特征 C³ 预处理
-- `preprocess_clip_neighbors()` — 邻居特征 Collapse
-- `load_embed_means()` — 加载 μ_text / μ_image
-
-### 3.2 ILR（Instance-Level Retrieval）
-
-**离线建索引**（`ilr/build_ilr_neighbors.py`）：
-1. 对训练集每条 caption 的 CLIP 文本特征加噪（variance=0.04）
-2. 用加噪 query 在语料库中余弦检索 Top-K（默认 K=5）
-3. 保存 JSON 邻居索引
-
-**训练时**：`CaptionsDataset` 读取预计算邻居 `rt_feat (B, K, 512)`。
-
-**推理时**（`meacap_utils/invlm_prompt.py`）：
-1. 图像 CLIP 与记忆库 `memory_clip_embeddings` 做 Cosine Top-K
-2. 取 K 条 memory caption 的文本 CLIP 作为 `rt_features`
-
-### 3.3 Gated 外融合（`utils.GatedFusion`）
+### 3.1 Gated 外融合（`utils.GatedFusion`）
 
 在 **512-d CLIP 空间、MappingNetwork 之前** 完成：
 
 ```
-e_agg = mean(e_neighbors, dim=K)           # (B, 512)
-g     = σ(MLP([e_primary ; e_agg]))        # (B, 512) 逐维门控
+e_agg   = mean(e_neighbors, dim=K)           # (B, 512)
+g       = σ(MLP([e_primary ; e_agg]))        # (B, 512) 逐维门控
 e_fused = normalize((1−g)⊙e_primary + g⊙e_agg)
 ```
 
 - 初始 g ≈ 0.2，等价于 linear 融合 w1=0.8 / w2=0.2 的稳定起点
 - 可学习参数在 `model.fusion.gate.*`，仅 `fusion_type=gated` 时启用
 
-**对比 linear 融合**（`fusion_type=linear`）：
+对比 linear 融合（`fusion_type=linear`）：
 
 ```
 e_fused = normalize(0.8 * e_primary + 0.2 * mean(e_neighbors))
 ```
 
-### 3.4 MappingNetwork / Projector（`ClipCap.MappingNetwork`）
+### 3.2 ILR（Instance-Level Retrieval）
 
-```
-512-d e_fused → Linear → (clip_project_length × 768)
-              → Transformer → 10 soft prefix tokens (768-d)
-              → 与 Hard Prompt token embedding 拼接 → GPT-2
-```
+**离线建索引**（`ilr/build_ilr_neighbors.py`）：
 
-### 3.5 Hard Prompt（训练 vs 推理）
+1. 对训练集每条 caption 的 CLIP 文本特征加噪（`ilr_variance`，默认 0.04）
+2. 用加噪 query 在语料库中余弦检索 Top-K（`ilr_k`，默认 5）
+3. 保存 JSON 邻居索引，如 `coco_ilr_neighbors_k5_seed30_var0.04.json`
 
-| 阶段 | 机制 | 代码 |
-|------|------|------|
-| **训练** | NLTK 名词解析 → `"There are entity1, entity2 in image."` | `CaptionsDataset.py`, `utils.parse_entities` |
-| **推理** | 记忆库 Top-K caption → Flan-T5 场景图 → Top-4 concepts | `meacap_utils/invlm_prompt.py` |
+**训练时**：`CaptionsDataset` 读取预计算邻居 `rt_feat (B, K, 512)`。
 
-训练与推理 Hard Prompt **来源不同**，这是 MeaCap InvLM 的设计，与 C³/Gated 独立。
+**推理时**（`meacap_utils/invlm_prompt.py`）：
 
-### 3.6 可选：internal_gated 内融合
+1. 图像 CLIP 与记忆库 `memory_clip_embeddings` 做 Cosine Top-K
+2. 取 K 条 memory caption 的文本 CLIP 作为 `rt_features`
+3. K 由 `--memory_caption_num` 控制，**须与训练 `--ilr_k` 一致**
 
-`FUSION_TYPE=internal_gated` 时：
-- **跳过**外融合 `model.fusion`
-- 在 MappingNetwork 内部，投影到 768-d 后对 query tokens 做门控融合
-- 详见 `utils.InternalGatedFusion`、`ClipCap.MappingNetwork`
+### 3.3 两个 variance 的区别（重要）
 
-本分支默认实验推荐 **gated 外融合**。
+| 参数 | 生效阶段 | 作用对象 | 典型取值 |
+|------|---------|---------|---------|
+| **`ilr_variance`** | 离线建 ILR JSON | 建索引时对 corpus 加噪 | 0.02 / 0.04 / 0.08 |
+| **`noise_variance`** | 训练 `main.py` | 训练时对 text CLIP 加噪 | 0.008 / 0.016 / 0.024 |
+
+- `ilr_variance` **不在** `main.py` 中，只影响 JSON 文件名和内容
+- `noise_variance` **只在训练时**生效，推理不传
+
+### 3.4 C³ 预处理（可选，`REMOVE_MEAN=1`）
+
+**Collapse**：`e' = normalize(e) − μ_modality`
+
+**Corrupt（仅训练）**：`e'' = normalize(e' + sqrt(noise_variance) * ε)`
+
+μ 由 `compute_embed_means.py` 离线计算：
+
+- COCO: `annotations/coco/normalized_text_embed_mean.pt`, `normalized_image_embed_mean.pt`
+- Flickr30k: `annotations/flickr30k/normalized_*_embed_mean.pt`
+
+关键函数：`preprocess_clip_primary()`, `preprocess_clip_neighbors()`, `load_embed_means()`
+
+### 3.5 MappingNetwork / Hard Prompt
+
+**Projector**：512-d → Linear → Transformer → 10 soft prefix tokens (768-d) → 拼接 Hard Prompt → GPT-2
+
+| 阶段 | Hard Prompt 来源 |
+|------|-----------------|
+| 训练 | NLTK 名词 → `"There are entity1, entity2 in image."` |
+| 推理 | MeaCap 记忆库 Top-K → Flan-T5 场景图 → Top-4 concepts |
 
 ---
 
-## 4. 支持的超参数
+## 4. 超参数与环境变量
 
 | 参数 / 环境变量 | 默认值 | 说明 |
 |----------------|--------|------|
 | `FUSION_TYPE` | `gated` | `linear` / `gated` / `internal_gated` |
-| `REMOVE_MEAN` | `0` | `1` 启用 C³ Collapse |
 | `USE_ILR` | 推理时 `0` | `1` 启用 ILR + 记忆库融合 |
-| `MEMORY_ID` | `coco` | 推理记忆库：`coco` / `flickr30k` |
-| `--noise_variance` | `0.016` | C³ Corrupt 噪声方差 |
+| `MEMORY_ID` | COCO/NoCaps: `coco`；Flickr: `flickr30k` | 推理记忆库 |
+| `MEMORY_CAPTION_NUM` | `5` | 推理 Top-K，**须等于训练 ilr_k** |
+| `REMOVE_MEAN` | `0` | `1` 启用 C³ Collapse |
+| `--ilr_k` | `5` | 训练邻居数 |
+| `--ilr_neighbors_path` | — | 离线 ILR JSON 路径 |
+| `--noise_variance` | `0.016` | 训练噪声（C³ Corrupt 或 legacy noise） |
 | `--fusion_w1/w2` | `0.8/0.2` | 仅 linear 融合使用 |
-| `--ilr_k` | `5` | 邻居数量 |
+
+### 训练—推理对齐规则
+
+```
+训练 --ilr_k K          ↔  推理 MEMORY_CAPTION_NUM=K
+训练 fusion_type=gated  ↔  推理 FUSION_TYPE=gated USE_ILR=1
+训练 REMOVE_MEAN=1      ↔  推理 REMOVE_MEAN=1 + 对应均值文件
+checkpoint 目录独立     ↔  不同实验用不同 --out_dir，避免覆盖
+```
 
 ---
 
 ## 5. 数据准备
 
-### 5.1 COCO（train_coco.sh 之前）
+### 5.1 一次性依赖
+
+- ViECap `checkpoints.zip` → `checkpoints/`、`annotations/`
+- MeaCap 记忆库 → `data/memory/coco/`, `data/memory/flickr30k/`
+- 本地模型：gpt2、clip-vit-base-patch32、flan-t5-base-VG-factual-sg、all-MiniLM-L6-v2
+
+### 5.2 COCO
 
 ```bash
-# ① NLTK 实体
-python -c "
-from load_annotations import load_captions
-from entities_extraction import main
-main(load_captions('coco_captions', './annotations/coco/train_captions.json'),
-     './annotations/coco/coco_with_entities.pickle')"
+# 实体 + CLIP 文本特征（或使用 ViECap 预处理好 pickle）
+python entities_extraction.py
+python texts_features_extraction.py
 
-# ② 文本 CLIP 特征
-python -c "
-from texts_features_extraction import main
-main('cuda:0','ViT-B/32',
-     './annotations/coco/coco_with_entities.pickle',
-     './annotations/coco/coco_texts_features_ViT-B32.pickle')"
-
-# ③ ILR 邻居
+# ILR 邻居索引
 bash scripts/build_ilr_neighbors_coco.sh 0
+# 或手动：
+python ilr/build_ilr_neighbors.py \
+  --path_of_datasets ./annotations/coco/coco_texts_features_ViT-B32.pickle \
+  --output_path ./annotations/coco/coco_ilr_neighbors_k5_seed30_var0.04.json \
+  --ilr_k 5 --ilr_variance 0.04 --seed 30 --device cuda:0
 
-# ④ 图像特征（C³ 需要）
+# 图像特征 + C³ 均值（启用 REMOVE_MEAN 时需要）
 python images_features_extraction.py
-
-# ⑤ C³ 模态均值
 python compute_embed_means.py \
   --path_of_text_features ./annotations/coco/coco_texts_features_ViT-B32.pickle \
   --path_of_image_features ./annotations/coco/test_captions_ViT-B32.pickle
 ```
 
-### 5.2 Flickr30k（train_flickr30k.sh 之前）
+### 5.3 Flickr30k
 
-将上述路径中的 `coco` 换为 `flickr30k`，实体/load_captions 使用 `flickr30k_captions`；
-ILR 使用 `bash scripts/build_ilr_neighbors_flickr30k.sh 0`；
-均值输出到 `annotations/flickr30k/normalized_*_embed_mean.pt`。
+将路径中 `coco` 换为 `flickr30k`，ILR 使用 `bash scripts/build_ilr_neighbors_flickr30k.sh 0`。
 
-**NLTK 依赖**（首次运行需下载）：
+### 5.4 NoCaps 评测额外要求
 
-```bash
-python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab');
-nltk.download('averaged_perceptron_tagger'); nltk.download('wordnet'); nltk.download('omw-1.4')"
-```
+- `annotations/nocaps/nocaps_corpus_ViT-B32.pickle`
+- `annotations/nocaps/in_domain/`（或 `in-domain/` / `val/`）原始图片
 
 ---
 
-## 6. 训练与推理命令
+## 6. 训练与推理
 
-### 6.1 COCO 训练 + 评测（C³ + Gated + ILR）
+### 6.1 COCO 标准训练（Gated + ILR）
 
 ```bash
-# 训练
-REMOVE_MEAN=1 FUSION_TYPE=gated bash scripts/train_coco.sh 0
-
-# COCO 评测
-REMOVE_MEAN=1 USE_ILR=1 FUSION_TYPE=gated \
-  bash scripts/eval_coco_meacap.sh train_coco 0 14
-
-# NoCaps 评测
-REMOVE_MEAN=1 USE_ILR=1 FUSION_TYPE=gated \
-  bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+export FUSION_TYPE=gated
+bash scripts/train_coco.sh 0
+# 等价于 15 epoch, ilr_k=5, gated, coco_prefix-0014.pt 用于评测
 ```
 
-### 6.2 Flickr30k 训练 + 评测
+手动训练示例：
 
 ```bash
-REMOVE_MEAN=1 FUSION_TYPE=gated bash scripts/train_flickr30k.sh 0
-
-REMOVE_MEAN=1 USE_ILR=1 FUSION_TYPE=gated \
-  bash scripts/eval_flickr30k_meacap.sh train_flickr30k 0 29
+python main.py \
+  --bs 80 --lr 0.00002 --epochs 15 --device cuda:0 \
+  --random_mask --prob_of_random_mask 0.4 \
+  --clip_model ViT-B/32 --using_clip_features --language_model gpt2 \
+  --using_hard_prompt --soft_prompt_first --use_ilr \
+  --ilr_k 5 \
+  --ilr_neighbors_path ./annotations/coco/coco_ilr_neighbors_k5_seed30_var0.04.json \
+  --fusion_w1 0.8 --fusion_w2 0.2 --fusion_type gated \
+  --noise_variance 0.016 \
+  --path_of_datasets ./annotations/coco/coco_texts_features_ViT-B32.pickle \
+  --out_dir checkpoints/train_coco --use_amp
 ```
 
-### 6.3 跨数据集评测（重要）
-
-**均值文件跟 checkpoint 走，不跟评测数据集走：**
+### 6.2 Flickr30k 标准训练
 
 ```bash
-# COCO 权重 → 评 Flickr，必须用 COCO 均值
+export FUSION_TYPE=gated
+bash scripts/train_flickr30k.sh 0
+# 30 epoch, 评测 epoch 29
+```
+
+### 6.3 COCO 评测
+
+```bash
+export USE_ILR=1
+export FUSION_TYPE=gated
+export MEMORY_CAPTION_NUM=5    # 与训练 ilr_k 一致
+export MEMORY_ID=coco          # 可选：coco / flickr30k 记忆库消融
+
+bash scripts/eval_coco_meacap.sh train_coco 0 14
+```
+
+### 6.4 Flickr30k 评测
+
+```bash
+export USE_ILR=1
+export FUSION_TYPE=gated
+export MEMORY_CAPTION_NUM=5
+export MEMORY_ID=flickr30k
+
+bash scripts/eval_flickr30k_meacap.sh train_flickr30k 0 29
+```
+
+### 6.5 NoCaps 跨域评测（COCO 权重）
+
+```bash
+export USE_ILR=1
+export FUSION_TYPE=gated
+export MEMORY_CAPTION_NUM=5
+export MEMORY_ID=coco
+
+bash scripts/eval_nocaps_meacap.sh train_coco 0 14
+```
+
+输出四个子域 CIDEr：**In-domain / Near-domain / Out-domain / Overall**。
+
+### 6.6 跨数据集评测
+
+**均值文件跟 checkpoint 训练集走，不跟评测数据集走：**
+
+```bash
+# COCO 权重 → 评 Flickr
 REMOVE_MEAN=1 USE_ILR=1 FUSION_TYPE=gated \
   TEXT_EMBED_MEAN_PATH=./annotations/coco/normalized_text_embed_mean.pt \
   IMAGE_EMBED_MEAN_PATH=./annotations/coco/normalized_image_embed_mean.pt \
-  MEMORY_ID=coco \
+  MEMORY_ID=coco MEMORY_CAPTION_NUM=5 \
   bash scripts/eval_flickr30k_meacap.sh train_coco 0 14
 
-# Flickr 权重 → 评 COCO，必须用 Flickr 均值
+# Flickr 权重 → 评 COCO
 REMOVE_MEAN=1 USE_ILR=1 FUSION_TYPE=gated \
   TEXT_EMBED_MEAN_PATH=./annotations/flickr30k/normalized_text_embed_mean.pt \
   IMAGE_EMBED_MEAN_PATH=./annotations/flickr30k/normalized_image_embed_mean.pt \
-  MEMORY_ID=flickr30k \
+  MEMORY_ID=flickr30k MEMORY_CAPTION_NUM=5 \
   bash scripts/eval_coco_meacap.sh train_flickr30k 0 29
+```
+
+### 6.7 单张图推理
+
+```bash
+bash scripts/run_meacap_invlm.sh images/instance1.jpg
 ```
 
 ---
 
-## 7. 关键代码文件
+## 7. 消融实验模板
+
+### 7.1 ilr_k 扫描（固定 ilr_variance=0.04）
+
+```bash
+for K in 3 5 7 9 10; do
+  EXP="train_coco_k${K}"
+  ILR_JSON="./annotations/coco/coco_ilr_neighbors_k${K}_seed30_var0.04.json"
+  # 建 JSON → 训练 --ilr_k ${K} --out_dir checkpoints/${EXP}
+  # 评测：MEMORY_CAPTION_NUM=${K} bash scripts/eval_coco_meacap.sh ${EXP} 0 14
+done
+```
+
+### 7.2 ilr_variance 扫描（固定 ilr_k=5）
+
+```bash
+for VAR in 0.02 0.04 0.06 0.08; do
+  EXP="train_coco_var${VAR}"
+  ILR_JSON="./annotations/coco/coco_ilr_neighbors_k5_seed30_var${VAR}.json"
+  # build_ilr_neighbors --ilr_variance ${VAR}
+  # 训练读 --ilr_neighbors_path "${ILR_JSON}"
+done
+```
+
+### 7.3 noise_variance 扫描（固定 ILR JSON）
+
+```bash
+for NVAR in 0.008 0.016 0.024 0.032; do
+  EXP="train_coco_nvar${NVAR}"
+  # 训练加 --noise_variance ${NVAR}，ILR JSON 共用 k5_var0.04
+  # 推理不传 noise_variance
+done
+```
+
+---
+
+## 8. 关键代码文件
 
 | 文件 | 职责 |
 |------|------|
 | `utils.py` | `GatedFusion`, C³ 预处理, `fuse_clip_features` |
-| `ClipCap.py` | `MappingNetwork`, `ClipCaptionModel` |
-| `main.py` | 训练循环：C³ → ILR → Gated → Projector |
-| `meacap_utils/invlm_prompt.py` | 推理：记忆库 ILR + C³ + Gated + Hard Prompt |
-| `compute_embed_means.py` | 离线计算 μ_text / μ_image |
-| `ilr/build_ilr_neighbors.py` | 离线 ILR 索引 |
+| `ClipCap.py` | `MappingNetwork`, `ClipCaptionModel`, fusion 子模块 |
+| `main.py` | 训练循环：预处理 → ILR → Gated → Projector |
+| `meacap_utils/invlm_prompt.py` | 推理：记忆库 ILR + Gated + Hard Prompt |
+| `ilr/build_ilr_neighbors.py` | 离线 ILR 索引（ilr_variance 在此生效） |
 | `ilr/cosine_retrieval.py` | 余弦 Top-K 检索 |
-| `CaptionsDataset.py` | 训练数据 + NLTK Hard Prompt |
-| `validation.py` / `viecap_inference.py` | 批量 / 单图推理入口 |
-| `scripts/train_coco.sh` | COCO 训练（支持 REMOVE_MEAN） |
-| `scripts/eval_*_meacap.sh` | MeaCap InvLM 评测脚本 |
+| `compute_embed_means.py` | 离线计算 C³ 模态均值 |
+| `validation.py` | 批量评测入口（COCO / Flickr / NoCaps） |
+| `scripts/train_coco.sh` / `train_flickr30k.sh` | 标准训练 |
+| `scripts/eval_*_meacap.sh` | MeaCap InvLM 评测（支持环境变量覆盖） |
+| `scripts/run_all_gated_pipeline.sh` | COCO + Flickr 串联流水线 |
 
 ---
 
-## 8. 常见错误排查
+## 9. 常见错误排查
 
-### 8.1 `ImportError: build_fusion_module`
-
-**原因**：`ClipCap.py` 与 `utils.py` 版本不一致。  
-**解决**：拉取 `update_C3` 最新代码，或确保 `utils.py` 含兼容函数。
-
-### 8.2 `Resource punkt not found`
-
-**原因**：NLTK 数据未下载。  
-**解决**：见第 5.2 节 NLTK download 命令。
-
-### 8.3 评测指标异常低
-
-检查三项是否与训练一致：
-1. `REMOVE_MEAN`（开/关）
-2. `FUSION_TYPE`（gated / linear / internal_gated）
-3. `USE_ILR=1` 且均值路径与 **checkpoint 训练数据集** 一致
+| 现象 | 原因 | 解决 |
+|------|------|------|
+| `memory_caption_num: 5` 但训练 ilr_k=3 | 旧版 eval 脚本写死 5 | 使用本分支，`export MEMORY_CAPTION_NUM=3` |
+| CIDEr 异常低 | fusion_type / USE_ILR / REMOVE_MEAN 与训练不一致 | 检查日志 `args` 与 `Validation mode` |
+| `fusion.gate.*` missing keys | gated checkpoint 用 linear 评测 | 训练与评测 `FUSION_TYPE` 必须一致 |
+| NoCaps 找不到图片 | 缺少 `annotations/nocaps/in_domain/` | 从 ViECap checkpoints.zip 解压 |
+| SPICE 崩溃但 CIDEr 已有 | Java/LMDB 并发问题 | CIDEr 可用；清 cache 或跳过 SPICE |
+| `Resource punkt not found` | NLTK 未下载 | `nltk.download('punkt')` 等 |
 
 日志应出现：
+
 ```
-'use_ilr': True, 'fusion_type': 'gated', 'remove_mean': True
+'use_ilr': True, 'fusion_type': 'gated', 'memory_caption_num': <K>
 Validation mode: MeaCap InvLM (memory retrieve-then-filter) + ILR feature fusion
 ```
 
-### 8.4 `fusion.gate.*` missing keys
-
-**原因**：用 `gated` checkpoint 做 `linear` 评测，或反之。  
-**解决**：训练与评测 `FUSION_TYPE` 必须一致。
-
-### 8.5 启用 REMOVE_MEAN 后必须用新 checkpoint
-
-旧 checkpoint（未按 C³ 流程训练）与 `--remove_mean` 不兼容，需重新训练。
-
 ---
 
-## 9. 消融实验建议
-
-| 实验 | 命令差异 |
-|------|----------|
-| Baseline（无 C³） | 不加 `REMOVE_MEAN=1` |
-| 仅 C³ Collapse | `REMOVE_MEAN=1`，可设 `--noise_variance 0` |
-| C³ + Linear ILR | `FUSION_TYPE=linear REMOVE_MEAN=1` |
-| C³ + Gated ILR（本分支主配置） | `FUSION_TYPE=gated REMOVE_MEAN=1` |
-| C³ + Internal_gated | `FUSION_TYPE=internal_gated REMOVE_MEAN=1` |
-
----
-
-## 10. 服务器拉取本分支
+## 10. 拉取本分支
 
 ```bash
 git fetch origin
-git checkout update_C3
-git pull origin update_C3
+git checkout updated_7.0
+git pull origin updated_7.0
 ```
 
 ---
 
-## 11. 历史实验记录（update_gated_fusion 时期）
+## 11. 引用
 
-以下为 gated 外融合（无 C³）在 COCO 上的参考结果，供对照：
-
-| 实验 | CIDEr | 配置 |
-|------|-------|------|
-| A (gated) | 51.6 | `train_coco` + `USE_ILR=1 FUSION_TYPE=gated` |
-| B (linear) | 50.3 | 同 checkpoint 误用 `FUSION_TYPE=linear` 评测 |
-
-**结论**：`fusion_type` 必须与训练一致；gated checkpoint 必须使用 `FUSION_TYPE=gated USE_ILR=1`。
-
----
-
-## 12. 引用
-
-- **MeaCap / ViECap / CapDec**：CLIP prefix captioning + Hard Prompt
+- **ViECap / CapDec**：CLIP prefix captioning + Hard Prompt
+- **MeaCap**：记忆库 retrieve-then-filter 硬提示
 - **IFCap ILR**：Instance-Level Retrieval 邻居增强
-- **C³ (ICLR 2024)**：Connect, Collapse, Corrupt — 桥接 CLIP Modality Gap
+- **C³ (ICLR 2024)**：Connect, Collapse, Corrupt
